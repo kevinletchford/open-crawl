@@ -56,6 +56,8 @@ async fn main() {
     // Naive link parsing for speed to match Go/TS behavior
     let link_regex = Regex::new(r#"href=["'](.*?)["']"#).unwrap();
 
+    let active_workers = Arc::new(AtomicUsize::new(0));
+
     for _ in 0..args.c {
         let client_clone = client.clone();
         let tx_clone = tx.clone();
@@ -63,6 +65,7 @@ async fn main() {
         let visited_clone = visited.clone();
         let req_count_clone = req_count.clone();
         let bytes_read_clone = bytes_read.clone();
+        let active_clone = active_workers.clone();
         let link_regex_clone = link_regex.clone();
         let max_reqs = args.max;
 
@@ -72,6 +75,8 @@ async fn main() {
                 if req_count_clone.load(Ordering::Relaxed) >= max_reqs {
                     break;
                 }
+
+                active_clone.fetch_add(1, Ordering::Relaxed);
 
                 match client_clone.get(&url).send().await {
                     Ok(resp) => {
@@ -83,6 +88,7 @@ async fn main() {
                             if current_reqs >= max_reqs {
                                 // We are done, clear queue to stop others
                                 rx_clone.close();
+                                active_clone.fetch_sub(1, Ordering::Relaxed);
                                 break;
                             }
 
@@ -103,8 +109,10 @@ async fn main() {
                             }
                         }
                     },
-                    Err(_) => continue,
+                    Err(_) => {},
                 }
+                
+                active_clone.fetch_sub(1, Ordering::Relaxed);
             }
         });
         workers.push(worker);
@@ -118,9 +126,16 @@ async fn main() {
             rx.close();
             break;
         }
-        if rx.is_empty() {
-             // Let it spin briefly or exit if completely dead, but 10ms poll is fine
+        
+        let active = active_workers.load(Ordering::Relaxed);
+        if rx.is_empty() && active == 0 {
+            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+            if rx.is_empty() && active_workers.load(Ordering::Relaxed) == 0 {
+                rx.close();
+                break;
+            }
         }
+        
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
     }
 

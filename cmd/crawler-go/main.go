@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -55,75 +56,120 @@ func main() {
 
 	start := time.Now()
 
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var activeWorkers atomic.Int32
+
 	for i := 0; i < *concurrency; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for url := range queue {
-				// Stop if we hit max requests
-				if reqCount.Load() >= *maxReqs {
+			for {
+				select {
+				case <-ctx.Done():
 					return
-				}
-
-				resp, err := client.Get(url)
-				if err != nil {
-					continue
-				}
-
-				body, err := io.ReadAll(resp.Body)
-				resp.Body.Close()
-				if err != nil {
-					continue
-				}
-
-				// Increment counters
-				bytesRead.Add(int64(len(body)))
-				reqsDone := reqCount.Add(1)
-
-				// Stop queuing if we are done
-				if reqsDone >= *maxReqs {
-					return
-				}
-
-				// Parse links (naively but fast)
-				matches := linkRegex.FindAllSubmatch(body, -1)
-				for _, match := range matches {
-					link := string(match[1])
-
-					// Resolve local paths back to the target origin
-					if link[0] == '/' {
-						link = "http://localhost:8080" + link
+				case url, ok := <-queue:
+					if !ok {
+						return
 					}
 
-					// If not visited, add to queue
-					if _, loaded := visited.LoadOrStore(link, true); !loaded {
-						select {
-						case queue <- link:
-						default:
-							// Queue full, drop link
+					activeWorkers.Add(1)
+
+					// Stop if we hit max requests
+					if reqCount.Load() >= *maxReqs {
+						activeWorkers.Add(-1)
+						return
+					}
+
+					resp, err := client.Get(url)
+					if err != nil {
+						activeWorkers.Add(-1)
+						continue
+					}
+
+					body, err := io.ReadAll(resp.Body)
+					resp.Body.Close()
+					if err != nil {
+						activeWorkers.Add(-1)
+						continue
+					}
+
+					// Increment counters
+					bytesRead.Add(int64(len(body)))
+					reqsDone := reqCount.Add(1)
+
+					// Stop queuing if we are done
+					if reqsDone >= *maxReqs {
+						cancel()
+						activeWorkers.Add(-1)
+						return
+					}
+
+					// Parse links (naively but fast)
+					matches := linkRegex.FindAllSubmatch(body, -1)
+					for _, match := range matches {
+						link := string(match[1])
+
+						// Resolve local paths back to the target origin
+						if link[0] == '/' {
+							link = "http://localhost:8080" + link
+						}
+
+						// If not visited, add to queue
+						if _, loaded := visited.LoadOrStore(link, true); !loaded {
+							select {
+							case queue <- link:
+							default:
+								// Queue full, drop link
+							}
 						}
 					}
+
+					activeWorkers.Add(-1)
 				}
 			}
 		}()
 	}
 
-	// Monitor to close queue when target hits
-	wg.Add(1)
+	// Monitor to close queue when target hits or queue is exhausted
+	monitorWg := sync.WaitGroup{}
+	monitorWg.Add(1)
 	go func() {
-		defer wg.Done()
+		defer monitorWg.Done()
 		for {
-			current := reqCount.Load()
-			fmt.Fprintf(os.Stderr, "PROGRESS: %d\n", current)
-			if current >= *maxReqs {
-				close(queue)
+			select {
+			case <-ctx.Done():
 				return
+			default:
+				current := reqCount.Load()
+				fmt.Fprintf(os.Stderr, "PROGRESS: %d\n", current)
+
+				// Exit condition 1: reached max requests
+				if current >= *maxReqs {
+					cancel()
+					return
+				}
+
+				// Exit condition 2: exhausted all URLs
+				if activeWorkers.Load() == 0 && len(queue) == 0 {
+					// wait a tiny bit to ensure no late additions
+					time.Sleep(50 * time.Millisecond)
+					if activeWorkers.Load() == 0 && len(queue) == 0 {
+						cancel()
+						return
+					}
+				}
+
+				time.Sleep(100 * time.Millisecond)
 			}
-			time.Sleep(100 * time.Millisecond)
 		}
 	}()
 
 	wg.Wait()
+	cancel()         // Ensure everything is cancelled
+	monitorWg.Wait() // wait for monitor to finish logging
+
 	duration := time.Since(start)
 
 	actualReqs := reqCount.Load()

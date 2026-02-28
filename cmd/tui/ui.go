@@ -12,6 +12,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/table"
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -43,8 +44,14 @@ type model struct {
 	currentReqs  int64
 
 	// current benchmark index when running
-	currentIdx int
-	crawlers   []string
+	currentIdx  int
+	currentPass int
+	totalPasses int
+	maxURLs     int
+	crawlers    []string
+
+	inputs     []textinput.Model
+	focusIndex int
 }
 
 type benchmarkCompleteMsg struct {
@@ -67,12 +74,28 @@ func initialModel() model {
 		table.WithHeight(7),
 	)
 
+	var inputs []textinput.Model = make([]textinput.Model, 2)
+	inputs[0] = textinput.New()
+	inputs[0].Placeholder = "10000"
+	inputs[0].Focus()
+	inputs[0].CharLimit = 10
+	inputs[0].Width = 10
+	inputs[0].Prompt = "Max URLs: "
+
+	inputs[1] = textinput.New()
+	inputs[1].Placeholder = "1"
+	inputs[1].CharLimit = 5
+	inputs[1].Width = 5
+	inputs[1].Prompt = "Passes: "
+
 	return model{
 		state:        stateConfig,
 		spinner:      s,
 		crawlers:     []string{"Go", "TypeScript", "Rust"},
 		table:        t,
 		progressChan: make(chan progressMsg, 1000), // Buffered to handle rapid prints
+		inputs:       inputs,
+		focusIndex:   0,
 	}
 }
 
@@ -86,18 +109,20 @@ func waitForProgress(c <-chan progressMsg) tea.Cmd {
 	}
 }
 
-func runRealBenchmark(language string, progChan chan<- progressMsg) tea.Cmd {
+func runRealBenchmark(language string, maxURLs int, progChan chan<- progressMsg) tea.Cmd {
 	return func() tea.Msg {
 		var cmd *exec.Cmd
 
+		maxFlag := fmt.Sprintf("--max=%d", maxURLs)
+
 		switch language {
 		case "Go":
-			cmd = exec.Command("./bin/crawler-go", "--url=http://localhost:8080/page/1", "--max=10000", "-c=100")
+			cmd = exec.Command("./bin/crawler-go", "--url=http://localhost:8080/page/1", maxFlag, "-c=100")
 		case "TypeScript":
-			cmd = exec.Command("node", "index.js", "--url=http://localhost:8080/page/1", "--max=10000", "-c=100")
+			cmd = exec.Command("node", "index.js", "--url=http://localhost:8080/page/1", maxFlag, "-c=100")
 			cmd.Dir = "./cmd/crawler-ts"
 		case "Rust":
-			cmd = exec.Command("../../bin/crawler-rust", "--url=http://localhost:8080/page/1", "--max=10000", "-c=100")
+			cmd = exec.Command("../../bin/crawler-rust", "--url=http://localhost:8080/page/1", maxFlag, "-c=100")
 			cmd.Dir = "./cmd/crawler-rust"
 		default:
 			return benchmarkCompleteMsg{
@@ -188,15 +213,66 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "q", "ctrl+c":
 			return m, tea.Quit
+		case "up", "shift+tab":
+			if m.state == stateConfig {
+				m.focusIndex--
+				if m.focusIndex < 0 {
+					m.focusIndex = len(m.inputs) - 1
+				}
+				for i := 0; i < len(m.inputs); i++ {
+					if i == m.focusIndex {
+						m.inputs[i].Focus()
+					} else {
+						m.inputs[i].Blur()
+					}
+				}
+				return m, nil
+			}
+		case "down", "tab":
+			if m.state == stateConfig {
+				m.focusIndex++
+				if m.focusIndex >= len(m.inputs) {
+					m.focusIndex = 0
+				}
+				for i := 0; i < len(m.inputs); i++ {
+					if i == m.focusIndex {
+						m.inputs[i].Focus()
+					} else {
+						m.inputs[i].Blur()
+					}
+				}
+				return m, nil
+			}
 		case "enter":
 			if m.state == stateConfig {
+				maxURLs, err := strconv.Atoi(m.inputs[0].Value())
+				if err != nil || maxURLs <= 0 {
+					maxURLs = 10000
+				}
+				passes, err := strconv.Atoi(m.inputs[1].Value())
+				if err != nil || passes <= 0 {
+					passes = 1
+				}
+
+				m.maxURLs = maxURLs
+				m.totalPasses = passes
 				m.state = stateRunning
 				m.currentIdx = 0
+				m.currentPass = 1
 				m.currentReqs = 0
+				m.results = nil // clear for new run
 				return m, tea.Batch(
-					runRealBenchmark(m.crawlers[m.currentIdx], m.progressChan),
+					runRealBenchmark(m.crawlers[m.currentIdx], m.maxURLs, m.progressChan),
 					waitForProgress(m.progressChan),
 				)
+			} else if m.state == stateResults {
+				m.state = stateConfig
+				return m, nil
+			}
+		case "r", "R":
+			if m.state == stateResults {
+				m.state = stateConfig
+				return m, nil
 			}
 		}
 
@@ -209,11 +285,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.currentIdx++
 		m.currentReqs = 0
 		if m.currentIdx < len(m.crawlers) {
-			return m, runRealBenchmark(m.crawlers[m.currentIdx], m.progressChan)
+			return m, runRealBenchmark(m.crawlers[m.currentIdx], m.maxURLs, m.progressChan)
 		} else {
-			m.state = stateResults
-			m.updateTableData()
-			return m, nil
+			m.currentPass++
+			if m.currentPass <= m.totalPasses {
+				m.currentIdx = 0
+				return m, runRealBenchmark(m.crawlers[m.currentIdx], m.maxURLs, m.progressChan)
+			} else {
+				m.state = stateResults
+				m.updateTableData()
+				return m, nil
+			}
 		}
 
 	case spinner.TickMsg:
@@ -221,18 +303,67 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, cmd)
 	}
 
+	if m.state == stateConfig {
+		for i := range m.inputs {
+			m.inputs[i], cmd = m.inputs[i].Update(msg)
+			if cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+		}
+	}
+
 	return m, tea.Batch(cmds...)
 }
 
 func (m *model) updateTableData() {
 	rows := []table.Row{}
-	for _, r := range m.results {
-		rows = append(rows, table.Row{
-			r.Language,
-			fmt.Sprintf("%.2f", r.ReqPerSec),
-			r.TimeTaken.String(),
-		})
+
+	// Aggregate results if passes > 1
+	agg := make(map[string]struct {
+		reqPerSec float64
+		timeTaken time.Duration
+		count     int
+	})
+
+	// Maintain order of languages
+	for _, cr := range m.crawlers {
+		agg[cr] = struct {
+			reqPerSec float64
+			timeTaken time.Duration
+			count     int
+		}{}
 	}
+
+	for _, r := range m.results {
+		baseLang := r.Language
+		// handle errors which might change the language field
+		for _, cr := range m.crawlers {
+			if strings.HasPrefix(r.Language, cr) {
+				baseLang = cr
+				break
+			}
+		}
+
+		val := agg[baseLang]
+		val.reqPerSec += r.ReqPerSec
+		val.timeTaken += r.TimeTaken
+		val.count++
+		agg[baseLang] = val
+	}
+
+	for _, cr := range m.crawlers {
+		val := agg[cr]
+		if val.count > 0 {
+			avgReq := val.reqPerSec / float64(val.count)
+			avgTime := time.Duration(int64(val.timeTaken) / int64(val.count))
+			rows = append(rows, table.Row{
+				cr,
+				fmt.Sprintf("%.2f", avgReq),
+				avgTime.String(),
+			})
+		}
+	}
+
 	m.table.SetRows(rows)
 }
 
@@ -268,15 +399,24 @@ func (m model) View() string {
 
 	switch m.state {
 	case stateConfig:
-		s += "Press [ENTER] to start the benchmark suite.\n\n"
-		s += lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Render("Crawlers to run: Go, TypeScript, Rust\nTarget: http://localhost:8080/page/1\nMax Requests: 10,000\nConcurrency: 100")
+		s += "Configure Benchmark and Press [ENTER] to start.\n\n"
+
+		for i := range m.inputs {
+			s += m.inputs[i].View()
+			if i < len(m.inputs)-1 {
+				s += "\n"
+			}
+		}
+		s += "\n\n" + lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Render("Crawlers to run: Go, TypeScript, Rust\nTarget: http://localhost:8080/page/1\nConcurrency: 100")
+		s += "\nUse Tab/Shift+Tab or Up/Down to switch inputs."
 	case stateRunning:
-		bar := m.progressBar(int(m.currentReqs), 10000)
-		s += fmt.Sprintf("%s Running %s crawler...\n\n%s %d/10000 requests",
-			m.spinner.View(), m.crawlers[m.currentIdx], bar, m.currentReqs)
+		bar := m.progressBar(int(m.currentReqs), m.maxURLs)
+		s += fmt.Sprintf("%s Running %s crawler (Pass %d/%d)...\n\n%s %d/%d requests",
+			m.spinner.View(), m.crawlers[m.currentIdx], m.currentPass, m.totalPasses, bar, m.currentReqs, m.maxURLs)
 	case stateResults:
 		s += "✅ Benchmarks Complete!\n\n"
 		s += m.table.View()
+		s += "\n\nPress 'r' or 'Enter' to restart."
 	}
 
 	s += "\n\nPress 'q' or 'ctrl+c' to quit.\n"

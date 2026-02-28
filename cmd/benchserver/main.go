@@ -11,9 +11,9 @@ import (
 // Config parameters for the synthetic server
 const (
 	port          = ":8080"
-	linksPerPage  = 10     // Number of outgoing links per page generated
-	maxPages      = 100000 // Determines how large the synthetic space is realistically
-	payloadSizeKB = 5      // Amount of junk text to simulate real page sizes
+	linksPerPage  = 10       // Number of outgoing links per page generated
+	maxPages      = 10000000 // Determines how large the synthetic space is realistically
+	payloadSizeKB = 5        // Amount of junk text to simulate real page sizes
 )
 
 var junkText string
