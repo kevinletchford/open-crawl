@@ -1,8 +1,9 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
-	"math/rand"
+	"os/exec"
 	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -26,17 +27,14 @@ type crawlerResult struct {
 }
 
 type model struct {
-	state       state
-	spinner     spinner.Model
-	resultsFunc func() tea.Msg
-	results     []crawlerResult
-	table       table.Model
+	state   state
+	spinner spinner.Model
+	results []crawlerResult
+	table   table.Model
 
 	// current benchmark index when running
 	currentIdx int
 	crawlers   []string
-
-	err error
 }
 
 type benchmarkCompleteMsg struct {
@@ -73,18 +71,64 @@ func (m model) Init() tea.Cmd {
 	return m.spinner.Tick
 }
 
-func runStubBenchmark(language string) tea.Cmd {
+func runRealBenchmark(language string) tea.Cmd {
 	return func() tea.Msg {
-		// Simulate running a crawler for 2-3 seconds
-		time.Sleep(time.Duration(rand.Intn(2000)+1000) * time.Millisecond)
+		var cmd *exec.Cmd
+
+		switch language {
+		case "Go":
+			cmd = exec.Command("./bin/crawler-go", "--url=http://localhost:8080/page/1", "--max=10000", "-c=100")
+		case "TypeScript":
+			cmd = exec.Command("npx", "ts-node", "./cmd/crawler-ts/index.ts", "--url=http://localhost:8080/page/1", "--max=10000", "-c=100")
+		case "Rust":
+			cmd = exec.Command("./bin/crawler-rust", "--url=http://localhost:8080/page/1", "--max=10000", "-c=100")
+		default:
+			return benchmarkCompleteMsg{
+				result: crawlerResult{Language: language, ReqPerSec: 0, TimeTaken: 0},
+			}
+		}
+
+		out, err := cmd.Output()
+		if err != nil {
+			return benchmarkCompleteMsg{
+				result: crawlerResult{
+					Language:  language + " (Error)",
+					ReqPerSec: 0,
+					TimeTaken: 0,
+				},
+			}
+		}
+
+		// Look for the JSON payload in the output.
+		// Some runtimes (like npm/npx) might inject warning logs. We just want the JSON line.
+		var res BenchmarkResult
+		if err := json.Unmarshal(out, &res); err != nil {
+			return benchmarkCompleteMsg{
+				result: crawlerResult{
+					Language:  language + " (Parse Err)",
+					ReqPerSec: 0,
+					TimeTaken: 0,
+				},
+			}
+		}
+
 		return benchmarkCompleteMsg{
 			result: crawlerResult{
-				Language:  language,
-				ReqPerSec: 1000 + rand.Float64()*5000,
-				TimeTaken: 2 * time.Second,
+				Language:  res.Language,
+				ReqPerSec: res.ReqPerSec,
+				TimeTaken: time.Duration(res.TimeTakenMs) * time.Millisecond,
 			},
 		}
 	}
+}
+
+// Ensure we have a matching type for the JSON payload
+type BenchmarkResult struct {
+	Language    string  `json:"language"`
+	Requests    int64   `json:"requests"`
+	TimeTakenMs int64   `json:"time_taken_ms"`
+	ReqPerSec   float64 `json:"req_per_sec"`
+	BytesRead   int64   `json:"bytes_read"`
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -100,7 +144,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.state == stateConfig {
 				m.state = stateRunning
 				m.currentIdx = 0
-				return m, runStubBenchmark(m.crawlers[m.currentIdx])
+				return m, runRealBenchmark(m.crawlers[m.currentIdx])
 			}
 		}
 
@@ -108,7 +152,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.results = append(m.results, msg.result)
 		m.currentIdx++
 		if m.currentIdx < len(m.crawlers) {
-			return m, runStubBenchmark(m.crawlers[m.currentIdx])
+			return m, runRealBenchmark(m.crawlers[m.currentIdx])
 		} else {
 			m.state = stateResults
 			m.updateTableData()

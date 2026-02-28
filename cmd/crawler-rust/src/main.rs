@@ -1,0 +1,144 @@
+use clap::Parser;
+use regex::Regex;
+use serde::Serialize;
+use std::collections::HashSet;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+use tokio::sync::RwLock;
+use async_channel::unbounded;
+
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+struct Args {
+    #[arg(long, default_value = "http://localhost:8080/page/1")]
+    url: String,
+
+    #[arg(long, default_value_t = 10000)]
+    max: usize,
+
+    #[arg(short, default_value_t = 100)]
+    c: usize,
+}
+
+#[derive(Serialize)]
+struct BenchmarkResult {
+    language: String,
+    requests: usize,
+    time_taken_ms: u128,
+    req_per_sec: f64,
+    bytes_read: usize,
+}
+
+#[tokio::main]
+async fn main() {
+    let args = Args::parse();
+    let start = std::time::Instant::now();
+
+    // The reqwest client with keep-alive
+    let client = reqwest::Client::builder()
+        .pool_max_idle_per_host(args.c)
+        .build()
+        .unwrap();
+
+    let (tx, rx) = unbounded::<String>();
+    
+    // Send initial URL
+    tx.send(args.url.clone()).await.unwrap();
+
+    let visited = Arc::new(RwLock::new(HashSet::new()));
+    visited.write().await.insert(args.url.clone());
+
+    let req_count = Arc::new(AtomicUsize::new(0));
+    let bytes_read = Arc::new(AtomicUsize::new(0));
+
+    let mut workers = vec![];
+    
+    // Naive link parsing for speed to match Go/TS behavior
+    let link_regex = Regex::new(r#"href=["'](.*?)["']"#).unwrap();
+
+    for _ in 0..args.c {
+        let client_clone = client.clone();
+        let tx_clone = tx.clone();
+        let rx_clone = rx.clone();
+        let visited_clone = visited.clone();
+        let req_count_clone = req_count.clone();
+        let bytes_read_clone = bytes_read.clone();
+        let link_regex_clone = link_regex.clone();
+        let max_reqs = args.max;
+
+        let worker = tokio::spawn(async move {
+            while let Ok(url) = rx_clone.recv().await {
+                // Check if we reached the max
+                if req_count_clone.load(Ordering::Relaxed) >= max_reqs {
+                    break;
+                }
+
+                match client_clone.get(&url).send().await {
+                    Ok(resp) => {
+                        if let Ok(text) = resp.text().await {
+                            bytes_read_clone.fetch_add(text.len(), Ordering::Relaxed);
+                            
+                            let current_reqs = req_count_clone.fetch_add(1, Ordering::Relaxed) + 1;
+                            
+                            if current_reqs >= max_reqs {
+                                // We are done, clear queue to stop others
+                                rx_clone.close();
+                                break;
+                            }
+
+                            for cap in link_regex_clone.captures_iter(&text) {
+                                if let Some(matched) = cap.get(1) {
+                                    let mut link = matched.as_str().to_string();
+                                    
+                                    if link.starts_with('/') {
+                                        link = format!("http://localhost:8080{}", link);
+                                    }
+                                    
+                                    let mut v = visited_clone.write().await;
+                                    if !v.contains(&link) {
+                                        v.insert(link.clone());
+                                        let _ = tx_clone.send(link).await;
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    Err(_) => continue,
+                }
+            }
+        });
+        workers.push(worker);
+    }
+    
+    // Wait for target hits
+    loop {
+        if req_count.load(Ordering::Relaxed) >= args.max {
+            rx.close();
+            break;
+        }
+        if rx.is_empty() {
+             // Let it spin briefly or exit if completely dead, but 10ms poll is fine
+        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+    }
+
+    // Wait for remaining
+    for w in workers {
+        let _ = w.await;
+    }
+
+    let duration_ms = start.elapsed().as_millis();
+    let actual_reqs = req_count.load(Ordering::Relaxed);
+    let req_per_sec = actual_reqs as f64 / (duration_ms as f64 / 1000.0);
+
+    let res = BenchmarkResult {
+        language: "Rust".to_string(),
+        requests: actual_reqs,
+        time_taken_ms: duration_ms,
+        req_per_sec,
+        bytes_read: bytes_read.load(Ordering::Relaxed),
+    };
+
+    println!("{}", serde_json::to_string(&res).unwrap());
+    std::process::exit(0);
+}
