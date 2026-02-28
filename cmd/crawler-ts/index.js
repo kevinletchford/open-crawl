@@ -8,6 +8,7 @@ const { values } = parseArgs({
     },
 });
 const targetURL = values.url;
+const baseURL = new URL(targetURL).origin;
 const maxReqs = parseInt(values.max, 10);
 const rawC = values.c;
 const concurrency = parseInt(rawC.startsWith('=') ? rawC.slice(1) : rawC, 10);
@@ -52,7 +53,7 @@ async function worker() {
                             for (const match of matches) {
                                 let link = match[1];
                                 if (link && link.startsWith('/')) {
-                                    link = "http://localhost:8080" + link;
+                                    link = baseURL + link;
                                 }
                                 if (link && !visited.has(link)) {
                                     visited.add(link);

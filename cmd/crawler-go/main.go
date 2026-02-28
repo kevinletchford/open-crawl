@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"regexp"
 	"sync"
@@ -30,6 +31,13 @@ func main() {
 	maxReqs := flag.Int64("max", 10000, "Maximum number of requests")
 	concurrency := flag.Int("c", 100, "Number of concurrent workers")
 	flag.Parse()
+
+	parsedURL, err := url.Parse(*targetURL)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Invalid target URL: %v\n", err)
+		os.Exit(1)
+	}
+	baseURL := parsedURL.Scheme + "://" + parsedURL.Host
 
 	// Crawl state
 	var reqCount atomic.Int64
@@ -112,8 +120,8 @@ func main() {
 						link := string(match[1])
 
 						// Resolve local paths back to the target origin
-						if link[0] == '/' {
-							link = "http://localhost:8080" + link
+						if len(link) > 0 && link[0] == '/' {
+							link = baseURL + link
 						}
 
 						// If not visited, add to queue

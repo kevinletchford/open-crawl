@@ -56,6 +56,8 @@ async fn main() {
     // Naive link parsing for speed to match Go/TS behavior
     let link_regex = Regex::new(r#"href=["'](.*?)["']"#).unwrap();
 
+    let base_url: String = args.url.split('/').take(3).collect::<Vec<_>>().join("/");
+
     let active_workers = Arc::new(AtomicUsize::new(0));
 
     for _ in 0..args.c {
@@ -67,6 +69,7 @@ async fn main() {
         let bytes_read_clone = bytes_read.clone();
         let active_clone = active_workers.clone();
         let link_regex_clone = link_regex.clone();
+        let base_url_clone = base_url.clone();
         let max_reqs = args.max;
 
         let worker = tokio::spawn(async move {
@@ -97,7 +100,7 @@ async fn main() {
                                     let mut link = matched.as_str().to_string();
                                     
                                     if link.starts_with('/') {
-                                        link = format!("http://localhost:8080{}", link);
+                                        link = format!("{}{}", base_url_clone, link);
                                     }
                                     
                                     let mut v = visited_clone.write().await;
