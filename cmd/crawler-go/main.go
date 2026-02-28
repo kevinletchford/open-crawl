@@ -113,11 +113,13 @@ func main() {
 	go func() {
 		defer wg.Done()
 		for {
-			if reqCount.Load() >= *maxReqs {
+			current := reqCount.Load()
+			fmt.Fprintf(os.Stderr, "PROGRESS: %d\n", current)
+			if current >= *maxReqs {
 				close(queue)
 				return
 			}
-			time.Sleep(10 * time.Millisecond)
+			time.Sleep(100 * time.Millisecond)
 		}
 	}()
 

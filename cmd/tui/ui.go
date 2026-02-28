@@ -1,9 +1,13 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os/exec"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -26,11 +30,17 @@ type crawlerResult struct {
 	TimeTaken time.Duration
 }
 
+type progressMsg struct {
+	reqs int64
+}
+
 type model struct {
-	state   state
-	spinner spinner.Model
-	results []crawlerResult
-	table   table.Model
+	state        state
+	spinner      spinner.Model
+	results      []crawlerResult
+	table        table.Model
+	progressChan chan progressMsg
+	currentReqs  int64
 
 	// current benchmark index when running
 	currentIdx int
@@ -40,8 +50,6 @@ type model struct {
 type benchmarkCompleteMsg struct {
 	result crawlerResult
 }
-
-type allBenchmarksCompleteMsg struct{}
 
 func initialModel() model {
 	s := spinner.New()
@@ -60,10 +68,11 @@ func initialModel() model {
 	)
 
 	return model{
-		state:    stateConfig,
-		spinner:  s,
-		crawlers: []string{"Go", "TypeScript", "Rust"},
-		table:    t,
+		state:        stateConfig,
+		spinner:      s,
+		crawlers:     []string{"Go", "TypeScript", "Rust"},
+		table:        t,
+		progressChan: make(chan progressMsg, 1000), // Buffered to handle rapid prints
 	}
 }
 
@@ -71,7 +80,13 @@ func (m model) Init() tea.Cmd {
 	return m.spinner.Tick
 }
 
-func runRealBenchmark(language string) tea.Cmd {
+func waitForProgress(c <-chan progressMsg) tea.Cmd {
+	return func() tea.Msg {
+		return <-c
+	}
+}
+
+func runRealBenchmark(language string, progChan chan<- progressMsg) tea.Cmd {
 	return func() tea.Msg {
 		var cmd *exec.Cmd
 
@@ -79,28 +94,61 @@ func runRealBenchmark(language string) tea.Cmd {
 		case "Go":
 			cmd = exec.Command("./bin/crawler-go", "--url=http://localhost:8080/page/1", "--max=10000", "-c=100")
 		case "TypeScript":
-			cmd = exec.Command("npx", "ts-node", "./cmd/crawler-ts/index.ts", "--url=http://localhost:8080/page/1", "--max=10000", "-c=100")
+			cmd = exec.Command("node", "index.js", "--url=http://localhost:8080/page/1", "--max=10000", "-c=100")
+			cmd.Dir = "./cmd/crawler-ts"
 		case "Rust":
-			cmd = exec.Command("./bin/crawler-rust", "--url=http://localhost:8080/page/1", "--max=10000", "-c=100")
+			cmd = exec.Command("../../bin/crawler-rust", "--url=http://localhost:8080/page/1", "--max=10000", "-c=100")
+			cmd.Dir = "./cmd/crawler-rust"
 		default:
 			return benchmarkCompleteMsg{
 				result: crawlerResult{Language: language, ReqPerSec: 0, TimeTaken: 0},
 			}
 		}
 
-		out, err := cmd.Output()
+		stderr, err := cmd.StderrPipe()
 		if err != nil {
 			return benchmarkCompleteMsg{
-				result: crawlerResult{
-					Language:  language + " (Error)",
-					ReqPerSec: 0,
-					TimeTaken: 0,
-				},
+				result: crawlerResult{Language: language + " (Pipe Err)", ReqPerSec: 0, TimeTaken: 0},
+			}
+		}
+		stdout, err := cmd.StdoutPipe()
+		if err != nil {
+			return benchmarkCompleteMsg{
+				result: crawlerResult{Language: language + " (Pipe Err)", ReqPerSec: 0, TimeTaken: 0},
 			}
 		}
 
-		// Look for the JSON payload in the output.
-		// Some runtimes (like npm/npx) might inject warning logs. We just want the JSON line.
+		if err := cmd.Start(); err != nil {
+			return benchmarkCompleteMsg{
+				result: crawlerResult{Language: language + " (Start Err)", ReqPerSec: 0, TimeTaken: 0},
+			}
+		}
+
+		// Read stderr for progress without blocking stdout
+		go func() {
+			scanner := bufio.NewScanner(stderr)
+			for scanner.Scan() {
+				line := scanner.Text()
+				if strings.HasPrefix(line, "PROGRESS: ") {
+					valStr := strings.TrimSpace(strings.TrimPrefix(line, "PROGRESS: "))
+					val, err := strconv.ParseInt(valStr, 10, 64)
+					if err == nil {
+						select {
+						case progChan <- progressMsg{reqs: val}:
+						default:
+							// Drop if too fast
+						}
+					}
+				}
+			}
+		}()
+
+		out, err := io.ReadAll(stdout)
+		if err != nil {
+			return benchmarkCompleteMsg{result: crawlerResult{Language: language + " (IO Err)"}}
+		}
+		cmd.Wait()
+
 		var res BenchmarkResult
 		if err := json.Unmarshal(out, &res); err != nil {
 			return benchmarkCompleteMsg{
@@ -144,15 +192,24 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.state == stateConfig {
 				m.state = stateRunning
 				m.currentIdx = 0
-				return m, runRealBenchmark(m.crawlers[m.currentIdx])
+				m.currentReqs = 0
+				return m, tea.Batch(
+					runRealBenchmark(m.crawlers[m.currentIdx], m.progressChan),
+					waitForProgress(m.progressChan),
+				)
 			}
 		}
+
+	case progressMsg:
+		m.currentReqs = msg.reqs
+		return m, waitForProgress(m.progressChan)
 
 	case benchmarkCompleteMsg:
 		m.results = append(m.results, msg.result)
 		m.currentIdx++
+		m.currentReqs = 0
 		if m.currentIdx < len(m.crawlers) {
-			return m, runRealBenchmark(m.crawlers[m.currentIdx])
+			return m, runRealBenchmark(m.crawlers[m.currentIdx], m.progressChan)
 		} else {
 			m.state = stateResults
 			m.updateTableData()
@@ -179,6 +236,26 @@ func (m *model) updateTableData() {
 	m.table.SetRows(rows)
 }
 
+func (m model) progressBar(current, total int) string {
+	width := 40
+	if current > total {
+		current = total
+	}
+	if current < 0 {
+		current = 0
+	}
+	percent := float64(current) / float64(total)
+	filled := int(percent * float64(width))
+	if filled > width {
+		filled = width
+	}
+	empty := width - filled
+
+	bar := lipgloss.NewStyle().Foreground(lipgloss.Color("205")).Render(strings.Repeat("█", filled))
+	bar += lipgloss.NewStyle().Foreground(lipgloss.Color("237")).Render(strings.Repeat("█", empty))
+	return bar
+}
+
 func (m model) View() string {
 	var s string
 
@@ -194,7 +271,9 @@ func (m model) View() string {
 		s += "Press [ENTER] to start the benchmark suite.\n\n"
 		s += lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Render("Crawlers to run: Go, TypeScript, Rust\nTarget: http://localhost:8080/page/1\nMax Requests: 10,000\nConcurrency: 100")
 	case stateRunning:
-		s += fmt.Sprintf("%s Running %s crawler...\n", m.spinner.View(), m.crawlers[m.currentIdx])
+		bar := m.progressBar(int(m.currentReqs), 10000)
+		s += fmt.Sprintf("%s Running %s crawler...\n\n%s %d/10000 requests",
+			m.spinner.View(), m.crawlers[m.currentIdx], bar, m.currentReqs)
 	case stateResults:
 		s += "✅ Benchmarks Complete!\n\n"
 		s += m.table.View()

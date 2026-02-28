@@ -19,7 +19,8 @@ const { values } = parseArgs({
 
 const targetURL = values.url as string;
 const maxReqs = parseInt(values.max as string, 10);
-const concurrency = parseInt(values.c as string, 10);
+const rawC = values.c as string;
+const concurrency = parseInt(rawC.startsWith('=') ? rawC.slice(1) : rawC, 10);
 
 const queue: string[] = [targetURL];
 const visited = new Set<string>([targetURL]);
@@ -30,38 +31,64 @@ let activeWorkers = 0;
 
 const linkRegex = /href=["'](.*?)["']/g;
 
+import * as http from 'http';
+
+const agent = new http.Agent({
+    keepAlive: true,
+    maxSockets: concurrency * 2,
+    timeout: 30000
+});
+
 async function worker() {
     activeWorkers++;
     
-    while (queue.length > 0 && reqCount < maxReqs) {
+    while (reqCount < maxReqs) {
         const url = queue.shift();
-        if (!url) break;
+        if (!url) {
+            if (activeWorkers === 1) {
+                break; // Last active worker, queue is empty, we're done
+            }
+            // Temporarily not active while waiting for queue to populate
+            activeWorkers--;
+            await new Promise(r => setTimeout(r, 1));
+            activeWorkers++;
+            continue;
+        }
 
         try {
-            const res = await fetch(url, {
-                // Keep-alive agent is default in modern node/bun fetch
+            await new Promise<void>((resolve, reject) => {
+                http.get(url, { agent }, (res) => {
+                    let text = '';
+                    res.on('data', (chunk) => {
+                        text += chunk;
+                        bytesRead += chunk.length;
+                    });
+                    
+                    res.on('end', () => {
+                        reqCount++;
+                        
+                        if (reqCount < maxReqs) {
+                            const matches = text.matchAll(linkRegex);
+                            for (const match of matches) {
+                                let link = match[1];
+                                if (link && link.startsWith('/')) {
+                                    link = "http://localhost:8080" + link;
+                                }
+                                
+                                if (link && !visited.has(link)) {
+                                    visited.add(link);
+                                    queue.push(link);
+                                }
+                            }
+                        }
+                        resolve();
+                    });
+                }).on('error', (err) => {
+                    resolve();
+                });
             });
-            const text = await res.text();
-            
-            bytesRead += text.length;
-            reqCount++;
-            
-            if (reqCount >= maxReqs) break;
-
-            let match;
-            while ((match = linkRegex.exec(text)) !== null) {
-                let link = match[1];
-                if (link && link.startsWith('/')) {
-                    link = "http://localhost:8080" + link;
-                }
-                
-                if (link && !visited.has(link)) {
-                    visited.add(link);
-                    queue.push(link);
-                }
-            }
-        } catch (e) {
-            // Ignore errors for benchmarking raw throughput
+        } catch (e: any) {
+            // Ignore
         }
     }
     
@@ -79,6 +106,7 @@ async function main() {
 
     // Wait for all workers to finish or queue to empty
     const checkInterval = setInterval(() => {
+        console.error(`PROGRESS: ${reqCount}`);
         if (reqCount >= maxReqs || (queue.length === 0 && activeWorkers === 0)) {
             clearInterval(checkInterval);
             const duration = performance.now() - start;

@@ -9,8 +9,7 @@ const { values } = parseArgs({
 });
 const targetURL = values.url;
 const maxReqs = parseInt(values.max, 10);
-const rawC = values.c;
-const concurrency = parseInt(rawC.startsWith('=') ? rawC.slice(1) : rawC, 10);
+const concurrency = parseInt(values.c, 10);
 const queue = [targetURL];
 const visited = new Set([targetURL]);
 let reqCount = 0;
@@ -25,18 +24,10 @@ const agent = new http.Agent({
 });
 async function worker() {
     activeWorkers++;
-    while (reqCount < maxReqs) {
+    while (queue.length > 0 && reqCount < maxReqs) {
         const url = queue.shift();
-        if (!url) {
-            if (activeWorkers === 1) {
-                break; // Last active worker, queue is empty, we're done
-            }
-            // Temporarily not active while waiting for queue to populate
-            activeWorkers--;
-            await new Promise(r => setTimeout(r, 1));
-            activeWorkers++;
-            continue;
-        }
+        if (!url)
+            break;
         try {
             await new Promise((resolve, reject) => {
                 http.get(url, { agent }, (res) => {

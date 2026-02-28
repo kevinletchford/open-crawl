@@ -112,14 +112,16 @@ async fn main() {
     
     // Wait for target hits
     loop {
-        if req_count.load(Ordering::Relaxed) >= args.max {
+        let current = req_count.load(Ordering::Relaxed);
+        eprintln!("PROGRESS: {}", current);
+        if current >= args.max {
             rx.close();
             break;
         }
         if rx.is_empty() {
              // Let it spin briefly or exit if completely dead, but 10ms poll is fine
         }
-        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
     }
 
     // Wait for remaining
