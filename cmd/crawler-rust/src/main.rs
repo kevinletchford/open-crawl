@@ -6,6 +6,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use async_channel::unbounded;
+use std::collections::VecDeque;
+use std::sync::Mutex;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -51,6 +53,8 @@ async fn main() {
     let req_count = Arc::new(AtomicUsize::new(0));
     let bytes_read = Arc::new(AtomicUsize::new(0));
 
+    let recent_urls = Arc::new(Mutex::new(VecDeque::new()));
+
     let mut workers = vec![];
     
     // Naive link parsing for speed to match Go/TS behavior
@@ -70,6 +74,7 @@ async fn main() {
         let active_clone = active_workers.clone();
         let link_regex_clone = link_regex.clone();
         let base_url_clone = base_url.clone();
+        let recent_urls_clone = recent_urls.clone();
         let max_reqs = args.max;
 
         let worker = tokio::spawn(async move {
@@ -77,6 +82,14 @@ async fn main() {
                 // Check if we reached the max
                 if req_count_clone.load(Ordering::Relaxed) >= max_reqs {
                     break;
+                }
+
+                {
+                    let mut q = recent_urls_clone.lock().unwrap();
+                    q.push_back(url.clone());
+                    if q.len() > 20 {
+                        q.pop_front();
+                    }
                 }
 
                 active_clone.fetch_add(1, Ordering::Relaxed);
@@ -103,6 +116,10 @@ async fn main() {
                                         link = format!("{}{}", base_url_clone, link);
                                     }
                                     
+                                    if !link.starts_with(&base_url_clone) {
+                                        continue;
+                                    }
+
                                     let mut v = visited_clone.write().await;
                                     if !v.contains(&link) {
                                         v.insert(link.clone());
@@ -124,7 +141,12 @@ async fn main() {
     // Wait for target hits
     loop {
         let current = req_count.load(Ordering::Relaxed);
-        eprintln!("PROGRESS: {}", current);
+        let recent_json = {
+            let q = recent_urls.lock().unwrap();
+            let vec: Vec<String> = q.iter().cloned().collect();
+            serde_json::to_string(&vec).unwrap_or_else(|_| "[]".to_string())
+        };
+        eprintln!("PROGRESS: {} | {}", current, recent_json);
         if current >= args.max {
             rx.close();
             break;

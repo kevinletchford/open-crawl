@@ -14,6 +14,7 @@ const rawC = values.c;
 const concurrency = parseInt(rawC.startsWith('=') ? rawC.slice(1) : rawC, 10);
 const queue = [targetURL];
 const visited = new Set([targetURL]);
+const recentURLs = [];
 let reqCount = 0;
 let bytesRead = 0;
 let activeWorkers = 0;
@@ -39,6 +40,10 @@ async function worker() {
             continue;
         }
         try {
+            recentURLs.push(url);
+            if (recentURLs.length > 20) {
+                recentURLs.shift();
+            }
             await new Promise((resolve, reject) => {
                 http.get(url, { agent }, (res) => {
                     let text = '';
@@ -54,6 +59,9 @@ async function worker() {
                                 let link = match[1];
                                 if (link && link.startsWith('/')) {
                                     link = baseURL + link;
+                                }
+                                if (!link || !link.startsWith(baseURL)) {
+                                    continue;
                                 }
                                 if (link && !visited.has(link)) {
                                     visited.add(link);
@@ -83,7 +91,8 @@ async function main() {
     }
     // Wait for all workers to finish or queue to empty
     const checkInterval = setInterval(() => {
-        console.error(`PROGRESS: ${reqCount}`);
+        const recentData = JSON.stringify(recentURLs);
+        console.error(`PROGRESS: ${reqCount} | ${recentData}`);
         if (reqCount >= maxReqs || (queue.length === 0 && activeWorkers === 0)) {
             clearInterval(checkInterval);
             const duration = performance.now() - start;

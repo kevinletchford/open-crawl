@@ -10,10 +10,33 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 )
+
+type recentURLsQueue struct {
+	mu   sync.Mutex
+	urls []string
+}
+
+func (q *recentURLsQueue) Add(url string) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.urls = append(q.urls, url)
+	if len(q.urls) > 20 {
+		q.urls = q.urls[len(q.urls)-20:]
+	}
+}
+
+func (q *recentURLsQueue) Get() []string {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	copied := make([]string, len(q.urls))
+	copy(copied, q.urls)
+	return copied
+}
 
 // Output standard format for all crawlers
 type BenchmarkResult struct {
@@ -45,6 +68,7 @@ func main() {
 
 	queue := make(chan string, *maxReqs*10)
 	visited := sync.Map{}
+	recentURLs := &recentURLsQueue{}
 
 	queue <- *targetURL
 	visited.Store(*targetURL, true)
@@ -106,6 +130,7 @@ func main() {
 					// Increment counters
 					bytesRead.Add(int64(len(body)))
 					reqsDone := reqCount.Add(1)
+					recentURLs.Add(url)
 
 					// Stop queuing if we are done
 					if reqsDone >= *maxReqs {
@@ -122,6 +147,11 @@ func main() {
 						// Resolve local paths back to the target origin
 						if len(link) > 0 && link[0] == '/' {
 							link = baseURL + link
+						}
+
+						// Restrict to same domain
+						if !strings.HasPrefix(link, baseURL) {
+							continue
 						}
 
 						// If not visited, add to queue
@@ -151,7 +181,8 @@ func main() {
 				return
 			default:
 				current := reqCount.Load()
-				fmt.Fprintf(os.Stderr, "PROGRESS: %d\n", current)
+				recentData, _ := json.Marshal(recentURLs.Get())
+				fmt.Fprintf(os.Stderr, "PROGRESS: %d | %s\n", current, string(recentData))
 
 				// Exit condition 1: reached max requests
 				if current >= *maxReqs {

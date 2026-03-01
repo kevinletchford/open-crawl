@@ -32,7 +32,8 @@ type crawlerResult struct {
 }
 
 type progressMsg struct {
-	reqs int64
+	reqs   int64
+	recent []string
 }
 
 type model struct {
@@ -42,6 +43,7 @@ type model struct {
 	table        table.Model
 	progressChan chan progressMsg
 	currentReqs  int64
+	recentURLs   []string
 
 	// current benchmark index when running
 	currentIdx  int
@@ -163,11 +165,19 @@ func runRealBenchmark(language string, targetURL string, maxURLs int, progChan c
 			for scanner.Scan() {
 				line := scanner.Text()
 				if strings.HasPrefix(line, "PROGRESS: ") {
-					valStr := strings.TrimSpace(strings.TrimPrefix(line, "PROGRESS: "))
+					trimmed := strings.TrimSpace(strings.TrimPrefix(line, "PROGRESS: "))
+					parts := strings.SplitN(trimmed, "|", 2)
+
+					valStr := strings.TrimSpace(parts[0])
 					val, err := strconv.ParseInt(valStr, 10, 64)
 					if err == nil {
+						var recent []string
+						if len(parts) == 2 {
+							_ = json.Unmarshal([]byte(strings.TrimSpace(parts[1])), &recent)
+						}
+
 						select {
-						case progChan <- progressMsg{reqs: val}:
+						case progChan <- progressMsg{reqs: val, recent: recent}:
 						default:
 							// Drop if too fast
 						}
@@ -273,6 +283,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.currentIdx = 0
 				m.currentPass = 1
 				m.currentReqs = 0
+				m.recentURLs = nil
 				m.results = nil // clear for new run
 				return m, tea.Batch(
 					runRealBenchmark(m.crawlers[m.currentIdx], m.targetURL, m.maxURLs, m.progressChan),
@@ -291,12 +302,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case progressMsg:
 		m.currentReqs = msg.reqs
+		m.recentURLs = msg.recent
 		return m, waitForProgress(m.progressChan)
 
 	case benchmarkCompleteMsg:
 		m.results = append(m.results, msg.result)
 		m.currentIdx++
 		m.currentReqs = 0
+		m.recentURLs = nil
 		if m.currentIdx < len(m.crawlers) {
 			return m, runRealBenchmark(m.crawlers[m.currentIdx], m.targetURL, m.maxURLs, m.progressChan)
 		} else {
@@ -424,8 +437,15 @@ func (m model) View() string {
 		s += "\nUse Tab/Shift+Tab or Up/Down to switch inputs."
 	case stateRunning:
 		bar := m.progressBar(int(m.currentReqs), m.maxURLs)
-		s += fmt.Sprintf("%s Running %s crawler (Pass %d/%d)...\nTarget: %s\n\n%s %d/%d requests",
+		s += fmt.Sprintf("%s Running %s crawler (Pass %d/%d)...\nTarget: %s\n\n%s %d/%d requests\n\n",
 			m.spinner.View(), m.crawlers[m.currentIdx], m.currentPass, m.totalPasses, m.targetURL, bar, m.currentReqs, m.maxURLs)
+
+		if len(m.recentURLs) > 0 {
+			s += lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Render("Recent URLs:") + "\n"
+			for _, url := range m.recentURLs {
+				s += "  " + url + "\n"
+			}
+		}
 	case stateResults:
 		s += "✅ Benchmarks Complete!\n\n"
 		s += m.table.View()
