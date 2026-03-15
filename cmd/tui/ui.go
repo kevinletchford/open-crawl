@@ -60,6 +60,8 @@ type model struct {
 
 	urlHistory   []string
 	historyIndex int
+
+	showHelp bool
 }
 
 type benchmarkCompleteMsg struct {
@@ -146,6 +148,7 @@ func initialModel() model {
 		focusIndex:   0,
 		urlHistory:   loadHistory(),
 		historyIndex: -1,
+		showHelp:     false, // Hide help by default on startup
 	}
 }
 
@@ -302,7 +305,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m, nil
 			}
-		case "ctrl+p":
+		case "shift+left":
 			if m.state == stateConfig && m.focusIndex == 0 && len(m.urlHistory) > 0 {
 				m.historyIndex++
 				if m.historyIndex >= len(m.urlHistory) {
@@ -312,7 +315,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.inputs[0].SetCursor(len(m.inputs[0].Value()))
 				return m, nil
 			}
-		case "ctrl+n":
+		case "shift+right":
 			if m.state == stateConfig && m.focusIndex == 0 {
 				m.historyIndex--
 				if m.historyIndex < 0 {
@@ -356,6 +359,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				)
 			} else if m.state == stateResults {
 				m.state = stateConfig
+				return m, nil
+			}
+		case "?":
+			if m.state == stateConfig && m.focusIndex != 0 {
+				m.showHelp = !m.showHelp
+				return m, nil
+			} else if m.state == stateConfig && m.focusIndex == 0 {
+				// We don't want '?' to toggle help when typing a URL since URLs can contain '?'
+				// But we'll add an explicit check to make sure it functions normally as a text input
+			}
+		case "esc":
+			if m.state == stateConfig && m.showHelp {
+				m.showHelp = false
 				return m, nil
 			}
 		case "r", "R":
@@ -498,9 +514,28 @@ func (m model) View() string {
 				s += "\n"
 			}
 		}
-		s += "\n\n" + lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Render("Crawlers to run: Go, TypeScript, Rust\nConcurrency: 100")
-		s += "\nUse Tab/Shift+Tab or Up/Down to switch inputs."
-		s += "\nUse Ctrl+P/Ctrl+N to access URL history."
+		if m.showHelp {
+			helpBox := lipgloss.NewStyle().
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(lipgloss.Color("240")).
+				Padding(1, 2).
+				MarginTop(1)
+
+			helpText := lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Render("Crawlers to run: Go, TypeScript, Rust\nConcurrency: 100") +
+				"\n\n" +
+				lipgloss.NewStyle().Foreground(lipgloss.Color("250")).Render("Keybindings:") + "\n" +
+				"  Tab/Shift+Tab : Switch inputs\n" +
+				"  Up/Down       : Switch inputs\n" +
+				"  Shift+Left    : Previous URL in history\n" +
+				"  Shift+Right   : Next URL in history\n" +
+				"  Enter         : Start benchmark\n" +
+				"  ? or Esc      : Toggle this help menu\n" +
+				"  Ctrl+C or q   : Quit"
+
+			s += helpBox.Render(helpText)
+		} else {
+			s += "\n\n" + lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Render("Press '?' to show help menu")
+		}
 	case stateRunning:
 		bar := m.progressBar(int(m.currentReqs), m.maxURLs)
 		s += fmt.Sprintf("%s Running %s crawler (Pass %d/%d)...\nTarget: %s\n\n%s %d/%d requests\n\n",
