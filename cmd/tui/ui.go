@@ -12,11 +12,14 @@ import (
 	"strings"
 	"time"
 
+	"database/sql"
+
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/table"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	_ "github.com/mattn/go-sqlite3"
 )
 
 type state int
@@ -68,6 +71,68 @@ type benchmarkCompleteMsg struct {
 	result crawlerResult
 }
 
+// Global DB connection
+var db *sql.DB
+
+func initDB() {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		home = "."
+	}
+	dbPath := filepath.Join(home, ".open-crawl-benchmarks.db")
+
+	var dbErr error
+	db, dbErr = sql.Open("sqlite3", dbPath)
+	if dbErr != nil {
+		fmt.Printf("Failed to open database: %v\n", dbErr)
+		return
+	}
+
+	createTableSQL := `CREATE TABLE IF NOT EXISTS benchmarks (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+		target_url TEXT,
+		language TEXT,
+		requests INTEGER,
+		time_taken_ms INTEGER,
+		req_per_sec REAL,
+		bytes_read INTEGER
+	);`
+
+	_, err = db.Exec(createTableSQL)
+	if err != nil {
+		fmt.Printf("Failed to initialize database: %v\n", err)
+	}
+}
+
+func saveBenchmarkToDB(targetURL string, res BenchmarkResult) {
+	if db == nil {
+		return
+	}
+	insertSQL := `INSERT INTO benchmarks(target_url, language, requests, time_taken_ms, req_per_sec, bytes_read) VALUES (?, ?, ?, ?, ?, ?)`
+	_, err := db.Exec(insertSQL, targetURL, res.Language, res.Requests, res.TimeTakenMs, res.ReqPerSec, res.BytesRead)
+	if err != nil {
+		fmt.Printf("Failed to save benchmark: %v\n", err)
+	}
+}
+
+func getHistoricalAverage(targetURL string, language string) (float64, error) {
+	if db == nil {
+		return 0, fmt.Errorf("DB not initialized")
+	}
+	query := `SELECT AVG(req_per_sec) FROM benchmarks WHERE target_url = ? AND language LIKE ?`
+	// Use LIKE to match Base Language (e.g. Go (Parse Err) -> Go%)
+	var avgReqPerSec sql.NullFloat64
+	err := db.QueryRow(query, targetURL, language+"%").Scan(&avgReqPerSec)
+	if err != nil {
+		return 0, err
+	}
+	if !avgReqPerSec.Valid {
+		return 0, fmt.Errorf("no historical data")
+	}
+	return avgReqPerSec.Float64, nil
+}
+
 func getHistoryPath() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -103,6 +168,7 @@ func saveHistory(url string, history []string) []string {
 }
 
 func initialModel() model {
+	initDB()
 	s := spinner.New()
 	s.Spinner = spinner.Dot
 	s.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
@@ -111,6 +177,7 @@ func initialModel() model {
 		{Title: "Language", Width: 15},
 		{Title: "Req/s", Width: 15},
 		{Title: "Time", Width: 15},
+		{Title: "Compare", Width: 15},
 	}
 	t := table.New(
 		table.WithColumns(columns),
@@ -246,6 +313,14 @@ func runRealBenchmark(language string, targetURL string, maxURLs int, progChan c
 				},
 			}
 		}
+
+		// Ensure Language string exactly matches the expected Language string logic
+		// if the original payload didn't already have it
+		if res.Language == "" || len(res.Language) < 2 {
+			res.Language = language
+		}
+
+		saveBenchmarkToDB(targetURL, res)
 
 		return benchmarkCompleteMsg{
 			result: crawlerResult{
@@ -463,10 +538,25 @@ func (m *model) updateTableData() {
 		if val.count > 0 {
 			avgReq := val.reqPerSec / float64(val.count)
 			avgTime := time.Duration(int64(val.timeTaken) / int64(val.count))
+
+			compareStr := "N/A"
+			histAvg, err := getHistoricalAverage(m.targetURL, cr)
+			if err == nil && histAvg > 0 {
+				delta := ((avgReq - histAvg) / histAvg) * 100
+				if delta > 0 {
+					compareStr = fmt.Sprintf("+%.2f%%", delta)
+				} else if delta < 0 {
+					compareStr = fmt.Sprintf("%.2f%%", delta)
+				} else {
+					compareStr = "0.00%"
+				}
+			}
+
 			rows = append(rows, table.Row{
 				cr,
 				fmt.Sprintf("%.2f", avgReq),
 				avgTime.String(),
+				compareStr,
 			})
 		}
 	}
