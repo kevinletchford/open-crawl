@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -55,10 +57,47 @@ type model struct {
 
 	inputs     []textinput.Model
 	focusIndex int
+
+	urlHistory   []string
+	historyIndex int
 }
 
 type benchmarkCompleteMsg struct {
 	result crawlerResult
+}
+
+func getHistoryPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ".open-crawl-history.json"
+	}
+	return filepath.Join(home, ".open-crawl-history.json")
+}
+
+func loadHistory() []string {
+	data, err := os.ReadFile(getHistoryPath())
+	if err != nil {
+		return nil
+	}
+	var hist []string
+	json.Unmarshal(data, &hist)
+	return hist
+}
+
+func saveHistory(url string, history []string) []string {
+	var newHist []string
+	for _, h := range history {
+		if h != url {
+			newHist = append(newHist, h)
+		}
+	}
+	newHist = append([]string{url}, newHist...)
+	if len(newHist) > 20 {
+		newHist = newHist[:20]
+	}
+	data, _ := json.MarshalIndent(newHist, "", "  ")
+	os.WriteFile(getHistoryPath(), data, 0644)
+	return newHist
 }
 
 func initialModel() model {
@@ -105,6 +144,8 @@ func initialModel() model {
 		progressChan: make(chan progressMsg, 1000), // Buffered to handle rapid prints
 		inputs:       inputs,
 		focusIndex:   0,
+		urlHistory:   loadHistory(),
+		historyIndex: -1,
 	}
 }
 
@@ -261,12 +302,36 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m, nil
 			}
+		case "ctrl+p":
+			if m.state == stateConfig && m.focusIndex == 0 && len(m.urlHistory) > 0 {
+				m.historyIndex++
+				if m.historyIndex >= len(m.urlHistory) {
+					m.historyIndex = len(m.urlHistory) - 1
+				}
+				m.inputs[0].SetValue(m.urlHistory[m.historyIndex])
+				m.inputs[0].SetCursor(len(m.inputs[0].Value()))
+				return m, nil
+			}
+		case "ctrl+n":
+			if m.state == stateConfig && m.focusIndex == 0 {
+				m.historyIndex--
+				if m.historyIndex < 0 {
+					m.historyIndex = -1
+					m.inputs[0].SetValue("")
+				} else if m.historyIndex < len(m.urlHistory) {
+					m.inputs[0].SetValue(m.urlHistory[m.historyIndex])
+					m.inputs[0].SetCursor(len(m.inputs[0].Value()))
+				}
+				return m, nil
+			}
 		case "enter":
 			if m.state == stateConfig {
 				targetURL := m.inputs[0].Value()
 				if targetURL == "" {
 					targetURL = "http://localhost:8080/page/1"
 				}
+				m.urlHistory = saveHistory(targetURL, m.urlHistory)
+				m.historyIndex = -1
 				maxURLs, err := strconv.Atoi(m.inputs[1].Value())
 				if err != nil || maxURLs <= 0 {
 					maxURLs = 10000
@@ -435,6 +500,7 @@ func (m model) View() string {
 		}
 		s += "\n\n" + lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Render("Crawlers to run: Go, TypeScript, Rust\nConcurrency: 100")
 		s += "\nUse Tab/Shift+Tab or Up/Down to switch inputs."
+		s += "\nUse Ctrl+P/Ctrl+N to access URL history."
 	case stateRunning:
 		bar := m.progressBar(int(m.currentReqs), m.maxURLs)
 		s += fmt.Sprintf("%s Running %s crawler (Pass %d/%d)...\nTarget: %s\n\n%s %d/%d requests\n\n",
