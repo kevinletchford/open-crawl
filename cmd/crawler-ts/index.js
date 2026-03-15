@@ -20,7 +20,13 @@ let bytesRead = 0;
 let activeWorkers = 0;
 const linkRegex = /href=["'](.*?)["']/g;
 import * as http from 'http';
-const agent = new http.Agent({
+import * as https from 'https';
+const httpAgent = new http.Agent({
+    keepAlive: true,
+    maxSockets: concurrency * 2,
+    timeout: 30000
+});
+const httpsAgent = new https.Agent({
     keepAlive: true,
     maxSockets: concurrency * 2,
     timeout: 30000
@@ -45,7 +51,28 @@ async function worker() {
                 recentURLs.shift();
             }
             await new Promise((resolve, reject) => {
-                http.get(url, { agent }, (res) => {
+                const parsedUrl = new URL(url);
+                const get = parsedUrl.protocol === 'https:' ? https.get : http.get;
+                const agent = parsedUrl.protocol === 'https:' ? httpsAgent : httpAgent;
+                get(url, { agent }, (res) => {
+                    if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+                        let redirectUrl = res.headers.location;
+                        if (redirectUrl.startsWith('/')) {
+                            redirectUrl = baseURL + redirectUrl;
+                        }
+                        if (redirectUrl.startsWith(baseURL) && !visited.has(redirectUrl)) {
+                            visited.add(redirectUrl);
+                            queue.push(redirectUrl);
+                        }
+                        res.resume();
+                        resolve();
+                        return;
+                    }
+                    if (res.statusCode !== 200) {
+                        res.resume(); // Consume response data to free up memory
+                        resolve();
+                        return;
+                    }
                     let text = '';
                     res.on('data', (chunk) => {
                         text += chunk;
