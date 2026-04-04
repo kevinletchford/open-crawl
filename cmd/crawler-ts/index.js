@@ -7,8 +7,18 @@ const { values } = parseArgs({
         c: { type: 'string', default: '100' },
     },
 });
-const targetURL = values.url;
-const baseURL = new URL(targetURL).origin;
+const rawURL = values.url;
+const targetURL = rawURL.startsWith('http://') || rawURL.startsWith('https://') ? rawURL : 'https://' + rawURL;
+const baseHost = new URL(targetURL).hostname.replace(/^www\./, '');
+function isSameDomain(link) {
+    try {
+        const u = new URL(link);
+        return u.hostname.replace(/^www\./, '') === baseHost;
+    }
+    catch {
+        return false;
+    }
+}
 const maxReqs = parseInt(values.max, 10);
 const rawC = values.c;
 const concurrency = parseInt(rawC.startsWith('=') ? rawC.slice(1) : rawC, 10);
@@ -54,13 +64,16 @@ async function worker() {
                 const parsedUrl = new URL(url);
                 const get = parsedUrl.protocol === 'https:' ? https.get : http.get;
                 const agent = parsedUrl.protocol === 'https:' ? httpsAgent : httpAgent;
-                get(url, { agent }, (res) => {
+                const req = get(url, { agent }, (res) => {
+                    // Clear the request timeout once we get a response
+                    req.setTimeout(0);
                     if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
                         let redirectUrl = res.headers.location;
                         if (redirectUrl.startsWith('/')) {
-                            redirectUrl = baseURL + redirectUrl;
+                            // Resolve relative redirect against the current full URL using URL constructor
+                            redirectUrl = new URL(redirectUrl, url).href;
                         }
-                        if (redirectUrl.startsWith(baseURL) && !visited.has(redirectUrl)) {
+                        if (isSameDomain(redirectUrl) && !visited.has(redirectUrl)) {
                             visited.add(redirectUrl);
                             queue.push(redirectUrl);
                         }
@@ -84,13 +97,20 @@ async function worker() {
                             const matches = text.matchAll(linkRegex);
                             for (const match of matches) {
                                 let link = match[1];
-                                if (link && link.startsWith('/')) {
-                                    link = baseURL + link;
+                                if (!link)
+                                    continue;
+                                if (link.startsWith('/')) {
+                                    try {
+                                        link = new URL(link, url).href;
+                                    }
+                                    catch {
+                                        continue;
+                                    }
                                 }
-                                if (!link || !link.startsWith(baseURL)) {
+                                if (!isSameDomain(link)) {
                                     continue;
                                 }
-                                if (link && !visited.has(link)) {
+                                if (!visited.has(link)) {
                                     visited.add(link);
                                     queue.push(link);
                                 }
@@ -98,7 +118,13 @@ async function worker() {
                         }
                         resolve();
                     });
-                }).on('error', (err) => {
+                });
+                // Per-request timeout: abort if no response within 10s
+                req.setTimeout(10000, () => {
+                    req.destroy();
+                    resolve();
+                });
+                req.on('error', (err) => {
                     resolve();
                 });
             });

@@ -75,11 +75,7 @@ type benchmarkCompleteMsg struct {
 var db *sql.DB
 
 func initDB() {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		home = "."
-	}
-	dbPath := filepath.Join(home, ".open-crawl-benchmarks.db")
+	dbPath := "./exports/benchmarks.db"
 
 	var dbErr error
 	db, dbErr = sql.Open("sqlite3", dbPath)
@@ -99,6 +95,7 @@ func initDB() {
 		bytes_read INTEGER
 	);`
 
+	var err error
 	_, err = db.Exec(createTableSQL)
 	if err != nil {
 		fmt.Printf("Failed to initialize database: %v\n", err)
@@ -134,11 +131,7 @@ func getHistoricalAverage(targetURL string, language string) (float64, error) {
 }
 
 func getHistoryPath() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ".open-crawl-history.json"
-	}
-	return filepath.Join(home, ".open-crawl-history.json")
+	return "./exports/history.json"
 }
 
 func loadHistory() []string {
@@ -165,6 +158,16 @@ func saveHistory(url string, history []string) []string {
 	data, _ := json.MarshalIndent(newHist, "", "  ")
 	os.WriteFile(getHistoryPath(), data, 0644)
 	return newHist
+}
+
+func writeDebugLog(language string, msg string, stderr string) {
+	os.MkdirAll("exports", 0755)
+	logMsg := fmt.Sprintf("[%s] %s\n%s\n--- STDERR ---\n%s\n\n", time.Now().Format(time.RFC3339), language, msg, stderr)
+	f, _ := os.OpenFile(filepath.Join("exports", "debug_ts.log"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if f != nil {
+		f.WriteString(logMsg)
+		f.Close()
+	}
 }
 
 func initialModel() model {
@@ -265,16 +268,19 @@ func runRealBenchmark(language string, targetURL string, maxURLs int, progChan c
 		}
 
 		if err := cmd.Start(); err != nil {
+			writeDebugLog(language, fmt.Sprintf("START ERROR: %v\nCmd: %v\nDir: %v", err, cmd.Args, cmd.Dir), "")
 			return benchmarkCompleteMsg{
 				result: crawlerResult{Language: language + " (Start Err)", ReqPerSec: 0, TimeTaken: 0},
 			}
 		}
 
-		// Read stderr for progress without blocking stdout
+		// Collect all stderr lines for logging
+		var stderrLines []string
 		go func() {
 			scanner := bufio.NewScanner(stderr)
 			for scanner.Scan() {
 				line := scanner.Text()
+				stderrLines = append(stderrLines, line)
 				if strings.HasPrefix(line, "PROGRESS: ") {
 					trimmed := strings.TrimSpace(strings.TrimPrefix(line, "PROGRESS: "))
 					parts := strings.SplitN(trimmed, "|", 2)
@@ -299,12 +305,20 @@ func runRealBenchmark(language string, targetURL string, maxURLs int, progChan c
 
 		out, err := io.ReadAll(stdout)
 		if err != nil {
+			writeDebugLog(language, "IO ERROR reading stdout", strings.Join(stderrLines, "\n"))
 			return benchmarkCompleteMsg{result: crawlerResult{Language: language + " (IO Err)"}}
 		}
+
 		cmd.Wait()
+
+		// Always log for TypeScript to help diagnose issues
+		if language == "TypeScript" {
+			writeDebugLog(language, string(out), strings.Join(stderrLines, "\n"))
+		}
 
 		var res BenchmarkResult
 		if err := json.Unmarshal(out, &res); err != nil {
+			writeDebugLog(language, fmt.Sprintf("PARSE ERROR: %v\nRaw stdout: %s", err, string(out)), strings.Join(stderrLines, "\n"))
 			return benchmarkCompleteMsg{
 				result: crawlerResult{
 					Language:  language + " (Parse Err)",
@@ -407,6 +421,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				targetURL := m.inputs[0].Value()
 				if targetURL == "" {
 					targetURL = "http://localhost:8080/page/1"
+				}
+				// Normalize: add https:// if no scheme provided (e.g. sitebulb.com -> https://sitebulb.com)
+				if !strings.HasPrefix(targetURL, "http://") && !strings.HasPrefix(targetURL, "https://") {
+					targetURL = "https://" + targetURL
 				}
 				m.urlHistory = saveHistory(targetURL, m.urlHistory)
 				m.historyIndex = -1
@@ -562,6 +580,51 @@ func (m *model) updateTableData() {
 	}
 
 	m.table.SetRows(rows)
+	m.generateReport(rows)
+}
+
+func (m *model) generateReport(rows []table.Row) {
+	timestamp := time.Now().Format("20060102_150405")
+	filename := filepath.Join("exports", fmt.Sprintf("report_%s.md", timestamp))
+
+	// Ensure directory exists
+	os.MkdirAll("exports", 0755)
+
+	var sb strings.Builder
+	sb.WriteString("# Open-Crawl Benchmark Report\n\n")
+	sb.WriteString(fmt.Sprintf("**Date:** %s\n", time.Now().Format(time.RFC1123)))
+	sb.WriteString(fmt.Sprintf("**Target URL:** %s\n", m.targetURL))
+	sb.WriteString(fmt.Sprintf("**Max URLs:** %d\n", m.maxURLs))
+	sb.WriteString(fmt.Sprintf("**Passes:** %d\n\n", m.totalPasses))
+
+	sb.WriteString("## Results\n\n")
+	sb.WriteString("| Language | Req/s | Time | vs Historical Avg |\n")
+	sb.WriteString("|----------|-------|------|-------------------|\n")
+
+	bestLang := ""
+	bestReqs := 0.0
+
+	for _, row := range rows {
+		sb.WriteString(fmt.Sprintf("| %s | %s | %s | %s |\n", row[0], row[1], row[2], row[3]))
+
+		// Determine best performer (highest Req/s)
+		if reqs, err := strconv.ParseFloat(row[1], 64); err == nil && reqs > bestReqs {
+			bestReqs = reqs
+			bestLang = row[0]
+		}
+	}
+
+	sb.WriteString("\n## Summary\n\n")
+	if bestLang != "" {
+		sb.WriteString(fmt.Sprintf("The best performing crawler in this run was **%s** with **%.2f Req/s**.\n", bestLang, bestReqs))
+	} else {
+		sb.WriteString("No successful crawler results generated.\n")
+	}
+
+	err := os.WriteFile(filename, []byte(sb.String()), 0644)
+	if err != nil {
+		fmt.Printf("Error saving report: %v\n", err)
+	}
 }
 
 func (m model) progressBar(current, total int) string {
@@ -640,6 +703,7 @@ func (m model) View() string {
 	case stateResults:
 		s += "✅ Benchmarks Complete!\n\n"
 		s += m.table.View()
+		s += "\n\n📄 A markdown report has been saved to the ./exports folder!"
 		s += "\n\nPress 'r' or 'Enter' to restart."
 	}
 
