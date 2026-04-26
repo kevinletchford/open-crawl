@@ -145,7 +145,7 @@ async function main() {
     // Wait for all workers to finish or queue to empty
     const checkInterval = setInterval(() => {
         const recentData = JSON.stringify(recentURLs);
-        console.error(`PROGRESS: ${reqCount} | ${recentData}`);
+        console.error(`PROGRESS: ${reqCount} | ${visited.size} | ${recentData}`);
         if (reqCount >= maxReqs || (queue.length === 0 && activeWorkers === 0)) {
             clearInterval(checkInterval);
             const duration = performance.now() - start;

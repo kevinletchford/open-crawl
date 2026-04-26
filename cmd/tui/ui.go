@@ -31,24 +31,27 @@ const (
 )
 
 type crawlerResult struct {
-	Language  string
-	ReqPerSec float64
-	TimeTaken time.Duration
+	Language       string
+	ReqPerSec      float64
+	TimeTaken      time.Duration
+	URLsDiscovered int64
 }
 
 type progressMsg struct {
-	reqs   int64
-	recent []string
+	reqs          int64
+	urlsDiscovered int64
+	recent        []string
 }
 
 type model struct {
-	state        state
-	spinner      spinner.Model
-	results      []crawlerResult
-	table        table.Model
-	progressChan chan progressMsg
-	currentReqs  int64
-	recentURLs   []string
+	state          state
+	spinner        spinner.Model
+	results        []crawlerResult
+	table          table.Model
+	progressChan   chan progressMsg
+	currentReqs    int64
+	urlsDiscovered int64
+	recentURLs     []string
 
 	// current benchmark index when running
 	currentIdx  int
@@ -177,10 +180,11 @@ func initialModel() model {
 	s.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
 
 	columns := []table.Column{
-		{Title: "Language", Width: 15},
-		{Title: "Req/s", Width: 15},
-		{Title: "Time", Width: 15},
-		{Title: "Compare", Width: 15},
+		{Title: "Language", Width: 12},
+		{Title: "Req/s", Width: 12},
+		{Title: "URLs", Width: 10},
+		{Title: "Time", Width: 12},
+		{Title: "Compare", Width: 12},
 	}
 	t := table.New(
 		table.WithColumns(columns),
@@ -283,18 +287,22 @@ func runRealBenchmark(language string, targetURL string, maxURLs int, progChan c
 				stderrLines = append(stderrLines, line)
 				if strings.HasPrefix(line, "PROGRESS: ") {
 					trimmed := strings.TrimSpace(strings.TrimPrefix(line, "PROGRESS: "))
-					parts := strings.SplitN(trimmed, "|", 2)
+					parts := strings.SplitN(trimmed, "|", 3)
 
 					valStr := strings.TrimSpace(parts[0])
 					val, err := strconv.ParseInt(valStr, 10, 64)
 					if err == nil {
+						var urlsDiscovered int64
 						var recent []string
-						if len(parts) == 2 {
-							_ = json.Unmarshal([]byte(strings.TrimSpace(parts[1])), &recent)
+						if len(parts) >= 2 {
+							urlsDiscovered, _ = strconv.ParseInt(strings.TrimSpace(parts[1]), 10, 64)
+						}
+						if len(parts) >= 3 {
+							_ = json.Unmarshal([]byte(strings.TrimSpace(parts[2])), &recent)
 						}
 
 						select {
-						case progChan <- progressMsg{reqs: val, recent: recent}:
+						case progChan <- progressMsg{reqs: val, urlsDiscovered: urlsDiscovered, recent: recent}:
 						default:
 							// Drop if too fast
 						}
@@ -444,6 +452,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.currentIdx = 0
 				m.currentPass = 1
 				m.currentReqs = 0
+				m.urlsDiscovered = 0
 				m.recentURLs = nil
 				m.results = nil // clear for new run
 				return m, tea.Batch(
@@ -476,13 +485,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case progressMsg:
 		m.currentReqs = msg.reqs
+		m.urlsDiscovered = msg.urlsDiscovered
 		m.recentURLs = msg.recent
 		return m, waitForProgress(m.progressChan)
 
 	case benchmarkCompleteMsg:
-		m.results = append(m.results, msg.result)
+		// Capture URLs discovered before resetting
+		result := msg.result
+		result.URLsDiscovered = m.urlsDiscovered
+		m.results = append(m.results, result)
 		m.currentIdx++
 		m.currentReqs = 0
+		m.urlsDiscovered = 0
 		m.recentURLs = nil
 		if m.currentIdx < len(m.crawlers) {
 			return m, runRealBenchmark(m.crawlers[m.currentIdx], m.targetURL, m.maxURLs, m.progressChan)
@@ -520,17 +534,19 @@ func (m *model) updateTableData() {
 
 	// Aggregate results if passes > 1
 	agg := make(map[string]struct {
-		reqPerSec float64
-		timeTaken time.Duration
-		count     int
+		reqPerSec      float64
+		timeTaken      time.Duration
+		urlsDiscovered int64
+		count          int
 	})
 
 	// Maintain order of languages
 	for _, cr := range m.crawlers {
 		agg[cr] = struct {
-			reqPerSec float64
-			timeTaken time.Duration
-			count     int
+			reqPerSec      float64
+			timeTaken      time.Duration
+			urlsDiscovered int64
+			count          int
 		}{}
 	}
 
@@ -547,6 +563,7 @@ func (m *model) updateTableData() {
 		val := agg[baseLang]
 		val.reqPerSec += r.ReqPerSec
 		val.timeTaken += r.TimeTaken
+		val.urlsDiscovered += r.URLsDiscovered
 		val.count++
 		agg[baseLang] = val
 	}
@@ -556,6 +573,7 @@ func (m *model) updateTableData() {
 		if val.count > 0 {
 			avgReq := val.reqPerSec / float64(val.count)
 			avgTime := time.Duration(int64(val.timeTaken) / int64(val.count))
+			avgURLs := val.urlsDiscovered / int64(val.count)
 
 			compareStr := "N/A"
 			histAvg, err := getHistoricalAverage(m.targetURL, cr)
@@ -573,6 +591,7 @@ func (m *model) updateTableData() {
 			rows = append(rows, table.Row{
 				cr,
 				fmt.Sprintf("%.2f", avgReq),
+				fmt.Sprintf("%d", avgURLs),
 				avgTime.String(),
 				compareStr,
 			})
@@ -598,14 +617,14 @@ func (m *model) generateReport(rows []table.Row) {
 	sb.WriteString(fmt.Sprintf("**Passes:** %d\n\n", m.totalPasses))
 
 	sb.WriteString("## Results\n\n")
-	sb.WriteString("| Language | Req/s | Time | vs Historical Avg |\n")
-	sb.WriteString("|----------|-------|------|-------------------|\n")
+	sb.WriteString("| Language | Req/s | URLs | Time | vs Historical Avg |\n")
+	sb.WriteString("|----------|-------|------|------|-------------------|\n")
 
 	bestLang := ""
 	bestReqs := 0.0
 
 	for _, row := range rows {
-		sb.WriteString(fmt.Sprintf("| %s | %s | %s | %s |\n", row[0], row[1], row[2], row[3]))
+		sb.WriteString(fmt.Sprintf("| %s | %s | %s | %s | %s |\n", row[0], row[1], row[2], row[3], row[4]))
 
 		// Determine best performer (highest Req/s)
 		if reqs, err := strconv.ParseFloat(row[1], 64); err == nil && reqs > bestReqs {
@@ -691,8 +710,8 @@ func (m model) View() string {
 		}
 	case stateRunning:
 		bar := m.progressBar(int(m.currentReqs), m.maxURLs)
-		s += fmt.Sprintf("%s Running %s crawler (Pass %d/%d)...\nTarget: %s\n\n%s %d/%d requests\n\n",
-			m.spinner.View(), m.crawlers[m.currentIdx], m.currentPass, m.totalPasses, m.targetURL, bar, m.currentReqs, m.maxURLs)
+		s += fmt.Sprintf("%s Running %s crawler (Pass %d/%d)...\nTarget: %s\n\n%s %d/%d requests | %d URLs discovered\n\n",
+			m.spinner.View(), m.crawlers[m.currentIdx], m.currentPass, m.totalPasses, m.targetURL, bar, m.currentReqs, m.maxURLs, m.urlsDiscovered)
 
 		if len(m.recentURLs) > 0 {
 			s += lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Render("Recent URLs:") + "\n"

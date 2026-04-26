@@ -141,12 +141,13 @@ async fn main() {
     // Wait for target hits
     loop {
         let current = req_count.load(Ordering::Relaxed);
+        let visited_count = visited.read().await.len();
         let recent_json = {
             let q = recent_urls.lock().unwrap();
             let vec: Vec<String> = q.iter().cloned().collect();
             serde_json::to_string(&vec).unwrap_or_else(|_| "[]".to_string())
         };
-        eprintln!("PROGRESS: {} | {}", current, recent_json);
+        eprintln!("PROGRESS: {} | {} | {}", current, visited_count, recent_json);
         if current >= args.max {
             rx.close();
             break;

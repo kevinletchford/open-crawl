@@ -181,8 +181,13 @@ func main() {
 				return
 			default:
 				current := reqCount.Load()
+				visitedCount := 0
+				visited.Range(func(key, value interface{}) bool {
+					visitedCount++
+					return true
+				})
 				recentData, _ := json.Marshal(recentURLs.Get())
-				fmt.Fprintf(os.Stderr, "PROGRESS: %d | %s\n", current, string(recentData))
+				fmt.Fprintf(os.Stderr, "PROGRESS: %d | %d | %s\n", current, visitedCount, string(recentData))
 
 				// Exit condition 1: reached max requests
 				if current >= *maxReqs {
@@ -213,6 +218,13 @@ func main() {
 
 	actualReqs := reqCount.Load()
 	reqsPerSec := float64(actualReqs) / duration.Seconds()
+
+	visitedFile, _ := os.Create("/tmp/crawl_urls.txt")
+	visited.Range(func(key, value interface{}) bool {
+		visitedFile.WriteString(fmt.Sprintf("%v\n", key))
+		return true
+	})
+	visitedFile.Close()
 
 	result := BenchmarkResult{
 		Language:    "Go",
