@@ -42,3 +42,9 @@ target/
 **/*.rs.bk
 
 exports/*
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+data/
