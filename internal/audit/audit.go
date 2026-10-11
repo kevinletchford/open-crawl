@@ -144,6 +144,7 @@ func Run(ctx context.Context, cfg Config) (*Report, error) {
 
 	a.renderPages(ctx)
 	probes := a.probe(ctx)
+	score := a.scorePages(probes)
 
 	r := &Report{
 		Version:     ReportVersion,
@@ -166,6 +167,7 @@ func Run(ctx context.Context, cfg Config) (*Report, error) {
 		Sitemaps: a.sitemaps,
 		Pages:    a.pages,
 		Probes:   probes,
+		Score:    score,
 	}
 	r.Findings = findings(r)
 	r.Summary = summarise(r)
@@ -408,6 +410,7 @@ func (a *auditor) visit(ctx context.Context, it crawlItem) []string {
 		pr.Title, pr.Canonical = page.Title, page.Canonical
 		pr.WordCount, pr.Scripts, pr.JSONLD = page.WordCount, page.Scripts, page.JSONLD
 		pr.Headings, pr.EmptyAppRoot = page.Headings, page.EmptyAppRoot
+		pr.HasDescription = len(page.Meta["description"]) > 0 && strings.TrimSpace(page.Meta["description"][0]) != ""
 		pr.RobotsMeta = page.Directives("robots")
 		dd := collectDirectives(page, pr.XRobotsTag, tokens(a.cfg.Agents))
 		d = &dd

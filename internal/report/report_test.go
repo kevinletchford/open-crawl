@@ -41,7 +41,7 @@ func TestRenderRealAudit(t *testing.T) {
 		t.Fatalf("HTML: %v", err)
 	}
 	out := html.String()
-	for _, want := range []string{"AI access audit", "robots.txt keeps GPTBot", "simulated", "heuristic", "Content-Signal", `class="s-blocked"`, `class="s-restricted"`} {
+	for _, want := range []string{"AI access audit", "AI readability score", "Fixes, by impact", "robots.txt keeps GPTBot", "simulated", "heuristic", "Content-Signal", `class="s-blocked"`, `class="s-restricted"`} {
 		if !strings.Contains(out, want) {
 			t.Errorf("HTML report is missing %q", want)
 		}
@@ -49,7 +49,7 @@ func TestRenderRealAudit(t *testing.T) {
 
 	var text bytes.Buffer
 	Text(&text, r)
-	if !strings.Contains(text.String(), "GPTBot") || !strings.Contains(text.String(), "Findings (") {
+	if !strings.Contains(text.String(), "GPTBot") || !strings.Contains(text.String(), "Findings (") || !strings.Contains(text.String(), "AI readability score") {
 		t.Errorf("text summary:\n%s", text.String())
 	}
 }

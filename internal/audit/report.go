@@ -63,8 +63,10 @@ type Report struct {
 	Sitemaps []SitemapResult `json:"sitemaps"`
 	Pages    []PageResult    `json:"pages"`
 	Probes   []ProbeResult   `json:"probes"`
-	Findings []Finding       `json:"findings"`
-	Summary  Summary         `json:"summary"`
+	// Score is nil when no page could be scored.
+	Score    *SiteScore `json:"score,omitempty"`
+	Findings []Finding  `json:"findings"`
+	Summary  Summary    `json:"summary"`
 }
 
 // Settings records the options the audit ran with.
@@ -127,6 +129,8 @@ type PageResult struct {
 	Scripts   int            `json:"scripts"`
 	JSONLD    int            `json:"json_ld"`
 	Headings  map[string]int `json:"headings,omitempty"`
+	// HasDescription: the page has a non-empty meta description.
+	HasDescription bool `json:"has_description"`
 	// EmptyAppRoot: the raw HTML has an empty single-page-app mount point.
 	EmptyAppRoot bool `json:"empty_app_root,omitempty"`
 	// XRobotsTag holds the raw X-Robots-Tag header values.
@@ -139,6 +143,9 @@ type PageResult struct {
 	// Render compares the raw HTML with the DOM after JavaScript ran. It is
 	// nil when the page wasn't rendered.
 	Render *RenderDiff `json:"render,omitempty"`
+
+	// Score is the page's readability score, for fetched 2xx HTML pages.
+	Score *PageScore `json:"score,omitempty"`
 }
 
 // Access states, from most to least open.

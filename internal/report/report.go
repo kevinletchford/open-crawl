@@ -34,9 +34,21 @@ var tmpl = template.Must(template.New("report").Funcs(template.FuncMap{
 		}
 		return ps
 	},
-	"more":    func(ps []audit.PageResult) int { return max(0, len(ps)-maxMatrixRows) },
-	"join":    strings.Join,
-	"percent": func(f float64) string { return fmt.Sprintf("%.0f%%", f*100) },
+	"more":       func(ps []audit.PageResult) int { return max(0, len(ps)-maxMatrixRows) },
+	"join":       strings.Join,
+	"percent":    func(f float64) string { return fmt.Sprintf("%.0f%%", f*100) },
+	"categories": func() []string { return audit.Categories },
+	"scoreTip": func(s *audit.PageScore) string {
+		var b strings.Builder
+		for _, c := range s.Checks {
+			mark := "✓"
+			if !c.Passed() {
+				mark = "✗"
+			}
+			fmt.Fprintf(&b, "%s %s (%s)\n", mark, c.Title, c.Fidelity)
+		}
+		return b.String()
+	},
 	"tip": func(a audit.AgentAccess) string {
 		parts := []string{a.Robots.Explain()}
 		if len(a.Directives) > 0 {
@@ -61,6 +73,22 @@ func Text(w io.Writer, r *audit.Report) {
 		fmt.Fprintf(w, " (HTTP %d)", r.Robots.Policy.Status)
 	}
 	fmt.Fprintln(w)
+
+	if s := r.Score; s != nil {
+		fmt.Fprintf(w, "\nAI readability score: %d", s.Overall)
+		for _, cat := range audit.Categories {
+			if v, ok := s.Categories[cat]; ok {
+				fmt.Fprintf(w, " · %s %d", cat, v)
+			}
+		}
+		fmt.Fprintf(w, " (%d pages)\n", s.Pages)
+		for i, f := range s.Fixes {
+			if i == 3 {
+				break
+			}
+			fmt.Fprintf(w, "  failing: %s (%d pages, +%.1f points if fixed)\n", f.Title, f.Pages, f.Impact)
+		}
+	}
 
 	fmt.Fprintf(w, "\nFindings (%d)\n", len(r.Findings))
 	for _, f := range r.Findings {

@@ -22,6 +22,7 @@ body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.55 syst
 main { max-width: 1120px; margin: 0 auto; padding: 32px 16px 64px; }
 h1 { font-size: 26px; margin: 0 0 4px; letter-spacing: -0.01em; }
 h2 { font-size: 18px; margin: 40px 0 12px; }
+h3 { font-size: 15px; margin: 24px 0 10px; }
 p, li { color: var(--muted); }
 code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
 a { color: inherit; }
@@ -72,6 +73,26 @@ footer { margin-top: 48px; font-size: 13px; color: var(--muted); border-top: 1px
     <div class="stat"><b>{{.Robots.Policy.Mode}}</b><span>robots.txt{{if .Robots.Policy.Status}} (HTTP {{.Robots.Policy.Status}}){{end}}</span></div>
   </div>
 
+  {{with .Score}}
+  <h2>AI readability score</h2>
+  <p>The average of {{.Pages}} pages, each scored on an open list of weighted checks. It isn't a model of how any answer engine ranks pages: every point traces back to a check below.</p>
+  <div class="stats">
+    <div class="stat"><b>{{.Overall}}</b><span>overall</span></div>
+    {{range $cat := categories}}{{with index $.Score.Categories $cat}}<div class="stat"><b>{{.}}</b><span>{{$cat}}</span></div>{{end}}{{end}}
+  </div>
+  {{if .Fixes}}
+  <h3>Fixes, by impact</h3>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>Failing check</th><th>Category</th><th>Fidelity</th><th>Pages failing</th><th>Points to gain</th></tr></thead>
+    <tbody>
+    {{range .Fixes}}<tr><td>{{.Title}}</td><td>{{.Category}}</td><td><span class="badge fid">{{.Fidelity}}</span></td><td>{{.Pages}}</td><td>{{.Impact}}</td></tr>{{end}}
+    </tbody>
+  </table>
+  </div>
+  {{end}}
+  {{end}}
+
   <h2>Findings</h2>
   <ul class="legend">
     <li><span class="badge fid">exact</span> from public signals: robots.txt, meta tags, headers, raw HTML</li>
@@ -120,13 +141,14 @@ footer { margin-top: 48px; font-size: 13px; color: var(--muted); border-top: 1px
   <p><span class="badge s-allowed">A</span> allowed · <span class="badge s-restricted">R</span> restricted by a noindex-style directive · <span class="badge s-blocked">B</span> blocked by robots.txt. Hover a cell for the rule.</p>
   <div class="scroll">
   <table class="matrix">
-    <thead><tr><th>URL</th><th>Status</th><th>Words</th>{{range .Agents}}<th class="agent">{{.Name}}</th>{{end}}</tr></thead>
+    <thead><tr><th>URL</th><th>Status</th><th>Words</th><th>Score</th>{{range .Agents}}<th class="agent">{{.Name}}</th>{{end}}</tr></thead>
     <tbody>
     {{range $p := capPages .Pages}}
       <tr>
         <td class="mono url">{{$p.URL}}{{if $p.SkipReason}}<br><span class="muted">not fetched</span>{{end}}</td>
         <td>{{if $p.Fetched}}{{if $p.Error}}error{{else}}{{$p.Status}}{{end}}{{else}}<span class="muted">-</span>{{end}}</td>
         <td>{{if $p.Fetched}}{{$p.WordCount}}{{else}}<span class="muted">-</span>{{end}}</td>
+        <td>{{if $p.Score}}<span title="{{scoreTip $p.Score}}">{{$p.Score.Overall}}</span>{{else}}<span class="muted">-</span>{{end}}</td>
         {{range $.Agents}}{{$acc := stateFor $p .Name}}
         <td class="cell"><span class="s-{{$acc.State}}" title="{{tip $acc}}">{{if eq $acc.State "allowed"}}A{{else if eq $acc.State "restricted"}}R{{else}}B{{end}}</span></td>
         {{end}}
