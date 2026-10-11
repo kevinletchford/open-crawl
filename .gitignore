@@ -48,3 +48,5 @@ exports/*
 *.sqlite
 *.sqlite3
 data/
+# Audit reports written by `opencrawl audit`
+opencrawl-*/

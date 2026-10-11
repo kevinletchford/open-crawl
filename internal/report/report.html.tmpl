@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI access audit · {{.Host}}</title>
+<style>
+:root {
+  --bg: #ffffff; --surface: #f6f6f4; --ink: #151515; --muted: #5f5f5a; --line: #e2e1dc;
+  --allowed: #1f7a4d; --allowed-bg: #e3f3ea; --restricted: #8a5a00; --restricted-bg: #fbf0d9;
+  --blocked: #b42318; --blocked-bg: #fde7e5; --info: #3b5bdb; --info-bg: #e7ecfd;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f0f0e; --surface: #1a1a18; --ink: #ecebe6; --muted: #a3a29b; --line: #2e2d2a;
+    --allowed: #5fd39a; --allowed-bg: #10301f; --restricted: #f0c060; --restricted-bg: #33270c;
+    --blocked: #ff8a80; --blocked-bg: #3a1512; --info: #9db1ff; --info-bg: #1a2247;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif; }
+main { max-width: 1120px; margin: 0 auto; padding: 32px 16px 64px; }
+h1 { font-size: 26px; margin: 0 0 4px; letter-spacing: -0.01em; }
+h2 { font-size: 18px; margin: 40px 0 12px; }
+p, li { color: var(--muted); }
+code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+a { color: inherit; }
+.meta { color: var(--muted); margin: 0; }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-top: 24px; }
+.stat { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }
+.stat b { display: block; font-size: 22px; }
+.stat span { color: var(--muted); font-size: 13px; }
+.legend { display: flex; flex-wrap: wrap; gap: 8px 20px; font-size: 13px; color: var(--muted); margin: 8px 0 0; padding: 0; list-style: none; }
+.badge { display: inline-block; border-radius: 999px; padding: 1px 8px; font-size: 12px; font-weight: 600; white-space: nowrap; }
+.sev-error { background: var(--blocked-bg); color: var(--blocked); }
+.sev-warning { background: var(--restricted-bg); color: var(--restricted); }
+.sev-info { background: var(--info-bg); color: var(--info); }
+.fid { border: 1px solid var(--line); color: var(--muted); font-weight: 500; }
+.finding { border: 1px solid var(--line); border-radius: 10px; margin-bottom: 10px; background: var(--bg); }
+.finding summary { cursor: pointer; padding: 12px 14px; display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.finding summary h3 { font-size: 15px; margin: 0; flex: 1 1 320px; }
+.finding .body { padding: 0 14px 14px; }
+.finding .body p { margin: 6px 0; white-space: pre-line; }
+.finding ul { margin: 6px 0; padding-left: 18px; max-height: 220px; overflow: auto; }
+.scroll { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; }
+table { border-collapse: collapse; width: 100%; font-size: 13px; }
+th, td { padding: 7px 10px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+thead th { position: sticky; top: 0; background: var(--surface); font-weight: 600; }
+tbody tr:last-child td { border-bottom: 0; }
+.matrix th.agent { writing-mode: vertical-rl; transform: rotate(180deg); white-space: nowrap; padding: 10px 6px; }
+.matrix td.cell { text-align: center; padding: 6px; }
+.cell span { display: inline-block; width: 22px; height: 22px; line-height: 22px; border-radius: 6px; font-size: 12px; font-weight: 700; }
+.s-allowed { background: var(--allowed-bg); color: var(--allowed); }
+.s-restricted { background: var(--restricted-bg); color: var(--restricted); }
+.s-blocked { background: var(--blocked-bg); color: var(--blocked); }
+.url { max-width: 380px; overflow-wrap: anywhere; }
+.muted { color: var(--muted); }
+pre { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 12px; overflow: auto; max-height: 360px; font-size: 13px; }
+footer { margin-top: 48px; font-size: 13px; color: var(--muted); border-top: 1px solid var(--line); padding-top: 16px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>AI access audit: {{.Host}}</h1>
+  <p class="meta">{{.GeneratedAt.Format "2 January 2006, 15:04 MST"}} · <code>{{.Target}}</code> · {{len .Agents}} agents</p>
+
+  <div class="stats">
+    <div class="stat"><b>{{.Summary.PagesFound}}</b><span>URLs found</span></div>
+    <div class="stat"><b>{{.Summary.PagesFetched}}</b><span>pages fetched</span></div>
+    <div class="stat"><b>{{index .Summary.Findings "error"}}</b><span>errors</span></div>
+    <div class="stat"><b>{{index .Summary.Findings "warning"}}</b><span>warnings</span></div>
+    <div class="stat"><b>{{.Robots.Policy.Mode}}</b><span>robots.txt{{if .Robots.Policy.Status}} (HTTP {{.Robots.Policy.Status}}){{end}}</span></div>
+  </div>
+
+  <h2>Findings</h2>
+  <ul class="legend">
+    <li><span class="badge fid">exact</span> from public signals: robots.txt, meta tags, headers, raw HTML</li>
+    <li><span class="badge fid">simulated</span> our requests sent with the agent's user agent, not the real agent</li>
+    <li><span class="badge fid">heuristic</span> an inference that can be wrong</li>
+  </ul>
+  {{range .Findings}}
+  <details class="finding"{{if ne .Severity "info"}} open{{end}}>
+    <summary>
+      <span class="badge sev-{{.Severity}}">{{.Severity}}</span>
+      <span class="badge fid">{{.Fidelity}}</span>
+      <h3>{{.Title}}</h3>
+    </summary>
+    <div class="body">
+      <p>{{.Detail}}</p>
+      {{if .Fix}}<p><strong>Fix:</strong> {{.Fix}}</p>{{end}}
+      {{if .Agents}}<p><strong>Agents:</strong> {{join .Agents ", "}}</p>{{end}}
+      {{if .URLs}}<ul>{{range .URLs}}<li class="mono url">{{.}}</li>{{end}}</ul>
+      {{if gt .Count (len .URLs)}}<p class="muted">…and {{.Count}} in total.</p>{{end}}{{end}}
+    </div>
+  </details>
+  {{else}}
+  <p>No findings.</p>
+  {{end}}
+
+  <h2>Agents</h2>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>Agent</th><th>Kind</th><th>robots.txt on /</th><th>Allowed</th><th>Restricted</th><th>Blocked</th><th>UA probe</th><th>Runs JS</th></tr></thead>
+    <tbody>
+    {{range $i, $s := .Summary.Agents}}{{$a := index $.Agents $i}}
+      <tr>
+        <td><strong>{{$s.Agent}}</strong><br><span class="muted">{{$a.Operator}}{{if $a.DocsURL}} · <a href="{{$a.DocsURL}}">docs</a>{{end}}</span></td>
+        <td>{{$s.Kind}}{{if $a.FetchedBy}}<br><span class="muted">fetched by {{$a.FetchedBy}}</span>{{end}}</td>
+        <td><span class="badge s-{{$s.Root}}">{{$s.Root}}</span></td>
+        <td>{{$s.Allowed}}</td><td>{{$s.Restricted}}</td><td>{{$s.Blocked}}</td>
+        <td>{{if $s.Probe}}{{$s.Probe}}{{else}}<span class="muted">n/a</span>{{end}}</td>
+        <td>{{if $a.Fetches}}{{if $a.RendersJS}}yes{{else}}no{{end}}{{else}}<span class="muted">n/a</span>{{end}}</td>
+      </tr>
+    {{end}}
+    </tbody>
+  </table>
+  </div>
+
+  <h2>Access by URL</h2>
+  <p><span class="badge s-allowed">A</span> allowed · <span class="badge s-restricted">R</span> restricted by a noindex-style directive · <span class="badge s-blocked">B</span> blocked by robots.txt. Hover a cell for the rule.</p>
+  <div class="scroll">
+  <table class="matrix">
+    <thead><tr><th>URL</th><th>Status</th><th>Words</th>{{range .Agents}}<th class="agent">{{.Name}}</th>{{end}}</tr></thead>
+    <tbody>
+    {{range $p := capPages .Pages}}
+      <tr>
+        <td class="mono url">{{$p.URL}}{{if $p.SkipReason}}<br><span class="muted">not fetched</span>{{end}}</td>
+        <td>{{if $p.Fetched}}{{if $p.Error}}error{{else}}{{$p.Status}}{{end}}{{else}}<span class="muted">-</span>{{end}}</td>
+        <td>{{if $p.Fetched}}{{$p.WordCount}}{{else}}<span class="muted">-</span>{{end}}</td>
+        {{range $.Agents}}{{$acc := stateFor $p .Name}}
+        <td class="cell"><span class="s-{{$acc.State}}" title="{{tip $acc}}">{{if eq $acc.State "allowed"}}A{{else if eq $acc.State "restricted"}}R{{else}}B{{end}}</span></td>
+        {{end}}
+      </tr>
+    {{end}}
+    </tbody>
+  </table>
+  </div>
+  {{if gt (more .Pages) 0}}<p class="muted">{{more .Pages}} more URLs are in the JSON report.</p>{{end}}
+
+  {{if .Probes}}
+  <h2>User-agent probes <span class="badge fid">simulated</span></h2>
+  <p>Each page was fetched with an ordinary browser user agent, then with each agent's user agent, from OpenCrawl's network. Firewalls that verify bots by IP or signature may treat the real agents differently. Your CDN or server logs are the ground truth.</p>
+  {{range .Probes}}
+  <details class="finding">
+    <summary><h3 class="mono">{{.URL}}</h3>{{if .Inconclusive}}<span class="badge sev-info">inconclusive</span>{{end}}</summary>
+    <div class="body scroll">
+      <table>
+        <thead><tr><th>Agent</th><th>Status</th><th>Bytes</th><th>Outcome</th><th>Detail</th></tr></thead>
+        <tbody>
+          <tr><td><em>browser baseline</em></td><td>{{.Baseline.Status}}</td><td>{{.Baseline.Bytes}}</td><td></td><td>{{.Baseline.Detail}}</td></tr>
+          {{range .Agents}}<tr><td>{{.Agent}}</td><td>{{if .Status}}{{.Status}}{{end}}</td><td>{{if .Status}}{{.Bytes}}{{end}}</td><td>{{.Outcome}}</td><td>{{.Detail}}</td></tr>{{end}}
+        </tbody>
+      </table>
+    </div>
+  </details>
+  {{end}}
+  {{end}}
+
+  <h2>robots.txt</h2>
+  <p class="mono">{{.Robots.URL}}</p>
+  {{if .Robots.Body}}<pre>{{.Robots.Body}}</pre>{{else}}<p>Not available ({{.Robots.Policy.Mode}}).</p>{{end}}
+
+  <footer>
+    Generated by opencrawl. Report format version {{.Version}}. Settings: up to {{.Settings.MaxPages}} pages, {{.Settings.Concurrency}} concurrent requests, {{.Settings.DelayMs}} ms apart{{if .Settings.IgnoreRobots}}, robots.txt ignored for the audit's own crawler{{end}}.
+    The audit reports what crawlers may fetch and what they receive. It cannot tell whether a page was used for training, how it ranks, or whether an assistant cites it.
+  </footer>
+</main>
+</body>
+</html>
