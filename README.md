@@ -72,7 +72,7 @@ a release; operators change these pages.
 | `internal/sitemap` | Sitemap and sitemap-index parsing |
 | `internal/audit` | The crawl, per-agent access, probes and findings |
 | `internal/report` | HTML report and terminal summary |
-| `cmd/crawler-*`, `cmd/tui`, `cmd/benchserver` | The Go/Rust/TypeScript throughput benchmarks |
+| `cmd/bench/` | The Go/Rust/TypeScript throughput benchmarks, their TUI and the synthetic server |
 
 ## Development
 

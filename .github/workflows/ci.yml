@@ -1,0 +1,24 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: gofmt, vet and race-enabled tests
+        run: make check
+      - name: Build the CLI
+        run: make opencrawl
+      - name: Build the benchmark tools
+        run: go build -o /dev/null ./cmd/bench/tui ./cmd/bench/benchserver

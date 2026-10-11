@@ -50,3 +50,6 @@ exports/*
 data/
 # Audit reports written by `opencrawl audit`
 opencrawl-*/
+
+# macOS
+.DS_Store
