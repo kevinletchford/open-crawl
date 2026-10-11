@@ -41,6 +41,7 @@ opencrawl history [host]         list saved audits
 opencrawl show <id>              re-print a saved audit, or write its report files
 opencrawl compare <id> [id]      what changed between two audits
 opencrawl mcp                    serve saved audits to AI tools over MCP
+opencrawl logs [flags] <file>…   what real AI agents requested and were served
 ```
 
 Audits are saved to `~/.opencrawl/opencrawl.db` (or `$OPENCRAWL_DB`), and each
@@ -66,6 +67,23 @@ Tools: `list_audits`, `audit_summary`, `query_access` (agent, state, path
 glob), `get_finding`, `compare_audits`, `list_agents`, and `run_audit`, which
 crawls politely and is capped at 100 pages. The server tells the client
 model to pass on each finding's fidelity.
+
+## What the real agents did: access logs
+
+A crawl from outside can only simulate an agent. Your server or CDN logs show
+what the real agents requested and what they got:
+
+```console
+$ ./bin/opencrawl logs access.log.gz -site https://example.com
+```
+
+Each request whose user agent names an AI agent is checked against that
+operator's published IP ranges (or Apple's reverse-DNS check). Requests from
+other addresses are reported as spoofed and left out of the other counts.
+Agents whose operators publish no way to verify (Meta, Amazon, ByteDance) are
+reported as unverifiable claims. It reads nginx/Apache combined logs and JSON
+lines from Cloudflare Logpush, Vercel log drains and similar. `-site` adds a
+check for fetches of paths robots.txt disallows.
 
 ## Being a polite crawler
 
@@ -99,6 +117,7 @@ a release; operators change these pages.
 | `internal/render` | Headless Chrome pool for the render diff |
 | `internal/store` | SQLite audit history (pure Go) |
 | `internal/mcpserver` | MCP tools over saved audits |
+| `internal/logs` | Access-log parsing, bot verification and analysis |
 | `internal/report` | HTML report and terminal summary |
 | `cmd/bench/` | The Go/Rust/TypeScript throughput benchmarks, their TUI and the synthetic server |
 
