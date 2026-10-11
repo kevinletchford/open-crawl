@@ -7,12 +7,15 @@
 package main
 
 import (
+	"bufio"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/url"
 	"os"
 	"os/signal"
@@ -27,6 +30,7 @@ import (
 	"github.com/kevinletchford/open-crawl/internal/agents"
 	"github.com/kevinletchford/open-crawl/internal/audit"
 	"github.com/kevinletchford/open-crawl/internal/fetch"
+	"github.com/kevinletchford/open-crawl/internal/logs"
 	"github.com/kevinletchford/open-crawl/internal/mcpserver"
 	"github.com/kevinletchford/open-crawl/internal/render"
 	"github.com/kevinletchford/open-crawl/internal/report"
@@ -45,6 +49,7 @@ Usage:
   opencrawl show <id>              re-print a saved audit, or write its report files
   opencrawl compare <id> [id]      what changed between two audits (default: the one before)
   opencrawl mcp                    serve saved audits to AI tools over MCP (stdio)
+  opencrawl logs [flags] <file>…   what real AI agents requested and were served, from access logs
 
 Audits are saved to $OPENCRAWL_DB or ~/.opencrawl/opencrawl.db.
 
@@ -75,6 +80,8 @@ func main() {
 		err = runCompare(ctx, args)
 	case "mcp":
 		err = runMCP(ctx, args)
+	case "logs":
+		err = runLogs(ctx, args)
 	case "-h", "--help", "help":
 		fmt.Print(usage)
 	default:
@@ -325,6 +332,117 @@ func runShow(ctx context.Context, args []string) error {
 			return err
 		}
 		fmt.Printf("\nReport: %s\n", htmlPath)
+	}
+	return nil
+}
+
+func runLogs(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("logs", flag.ContinueOnError)
+	format := fs.String("format", "auto", "log format: auto, combined (nginx/Apache) or json (Cloudflare Logpush, Vercel, …)")
+	site := fs.String("site", "", "site URL; its robots.txt is used to spot fetches of disallowed paths")
+	noVerify := fs.Bool("no-verify", false, "don't download operators' IP range lists (every request stays unverified)")
+	agentNames := fs.String("agents", "", "comma-separated agents to report (default: all)")
+	asJSON := fs.Bool("json", false, "print the report as JSON")
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), "Usage: opencrawl logs [flags] <file>… (\"-\" for stdin; .gz files are decompressed)")
+		fs.PrintDefaults()
+	}
+	// Flags may follow the file names.
+	var files []string
+	for {
+		if err := fs.Parse(args); err != nil {
+			return err
+		}
+		if fs.NArg() == 0 {
+			break
+		}
+		files = append(files, fs.Arg(0))
+		args = fs.Args()[1:]
+	}
+	if len(files) == 0 {
+		fs.Usage()
+		return errors.New("no log files given")
+	}
+	f := logs.Format(*format)
+	switch f {
+	case logs.FormatAuto, logs.FormatCombined, logs.FormatJSON:
+	default:
+		return fmt.Errorf("unknown format %q", *format)
+	}
+	list, err := agentList(*agentNames)
+	if err != nil {
+		return err
+	}
+
+	client := fetch.New(fetch.Options{})
+	var verifier *logs.Verifier
+	if !*noVerify {
+		fmt.Fprintln(os.Stderr, "  loading published IP ranges")
+		verifier = logs.NewVerifier(ctx, client, list, net.DefaultResolver)
+	}
+	var policy *robots.Policy
+	robotsURL := ""
+	if *site != "" {
+		u, err := url.Parse(*site)
+		if err != nil || u.Host == "" {
+			if u, err = url.Parse("https://" + *site); err != nil {
+				return fmt.Errorf("bad -site %q", *site)
+			}
+		}
+		if u.Scheme == "" {
+			u.Scheme = "https"
+		}
+		robotsURL = u.Scheme + "://" + u.Host + "/robots.txt"
+		res := client.GetLimited(ctx, robotsURL, "", robots.MaxSize)
+		p := robots.FromResponse(res.Status, res.Body, res.Err)
+		policy = &p
+	}
+
+	an := logs.NewAnalyzer(list, verifier, policy)
+	for _, name := range files {
+		if err := readLogFile(ctx, name, func(line string) { an.Line(ctx, line, f) }); err != nil {
+			return err
+		}
+	}
+	r := an.Report()
+	r.RobotsURL = robotsURL
+	if *asJSON {
+		return writeJSON(os.Stdout, r)
+	}
+	report.LogsText(os.Stdout, r)
+	return nil
+}
+
+// readLogFile calls fn with each line of name ("-" for stdin), gunzipping
+// .gz files.
+func readLogFile(ctx context.Context, name string, fn func(string)) error {
+	var r io.Reader = os.Stdin
+	if name != "-" {
+		f, err := os.Open(name)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		r = f
+		if strings.HasSuffix(name, ".gz") {
+			zr, err := gzip.NewReader(f)
+			if err != nil {
+				return fmt.Errorf("%s: %w", name, err)
+			}
+			defer zr.Close()
+			r = zr
+		}
+	}
+	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 64*1024), 4<<20)
+	for sc.Scan() {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		fn(sc.Text())
+	}
+	if err := sc.Err(); err != nil {
+		return fmt.Errorf("%s: %w", name, err)
 	}
 	return nil
 }

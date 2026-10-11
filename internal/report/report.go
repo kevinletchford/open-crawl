@@ -11,6 +11,7 @@ import (
 	"text/tabwriter"
 
 	"github.com/kevinletchford/open-crawl/internal/audit"
+	"github.com/kevinletchford/open-crawl/internal/logs"
 )
 
 //go:embed report.html.tmpl
@@ -133,5 +134,38 @@ func TextComparison(w io.Writer, c audit.Comparison, oldID, newID int64) {
 	}
 	for _, f := range c.Changed {
 		fmt.Fprintf(w, "  ~ changed  %-7s %s (count %d → %d)\n", strings.ToUpper(string(f.Severity)), f.Title, f.Before, f.Count)
+	}
+}
+
+// LogsText prints a log analysis.
+func LogsText(w io.Writer, r *logs.Report) {
+	fmt.Fprintf(w, "\nAccess logs: %d lines, %d parsed", r.Lines, r.Parsed)
+	if !r.From.IsZero() {
+		fmt.Fprintf(w, ", %s to %s", r.From.Format("2006-01-02 15:04"), r.To.Format("2006-01-02 15:04 MST"))
+	}
+	fmt.Fprintln(w)
+	if r.RobotsURL != "" {
+		fmt.Fprintf(w, "Disallowed fetches checked against %s\n", r.RobotsURL)
+	}
+	for agent, msg := range r.VerificationErrors {
+		fmt.Fprintf(w, "warning: couldn't load %s's IP ranges (%s); its requests stay unverified\n", agent, msg)
+	}
+
+	if len(r.Agents) == 0 {
+		fmt.Fprintln(w, "\nNo requests from known AI agents.")
+	} else {
+		fmt.Fprintln(w, "\nAgents (outcome columns count only verified or unverifiable requests; spoofed ones are left out)")
+		tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(tw, "  AGENT\tREQUESTS\tVERIFIED\tSPOOFED\tUNVERIFIABLE\t2XX\t3XX\t4XX\t5XX\tREFUSED\tDISALLOWED")
+		for _, s := range r.Agents {
+			fmt.Fprintf(tw, "  %s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n", s.Agent, s.Requests, s.Verified, s.Unverified, s.Unknown,
+				s.Status["2xx"], s.Status["3xx"], s.Status["4xx"], s.Status["5xx"], s.Refused, s.Disallowed)
+		}
+		tw.Flush()
+	}
+
+	fmt.Fprintf(w, "\nFindings (%d)\n", len(r.Findings))
+	for _, f := range r.Findings {
+		fmt.Fprintf(w, "  %-7s %-9s %s\n", strings.ToUpper(string(f.Severity)), "["+string(f.Fidelity)+"]", f.Title)
 	}
 }
