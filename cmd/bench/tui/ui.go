@@ -248,10 +248,10 @@ func runRealBenchmark(language string, targetURL string, maxURLs int, progChan c
 			cmd = exec.Command("./bin/crawler-go", urlFlag, maxFlag, "-c=100")
 		case "TypeScript":
 			cmd = exec.Command("node", "index.js", urlFlag, maxFlag, "-c=100")
-			cmd.Dir = "./cmd/crawler-ts"
+			cmd.Dir = "./cmd/bench/crawler-ts"
 		case "Rust":
-			cmd = exec.Command("../../bin/crawler-rust", urlFlag, maxFlag, "-c=100")
-			cmd.Dir = "./cmd/crawler-rust"
+			cmd = exec.Command("../../../bin/crawler-rust", urlFlag, maxFlag, "-c=100")
+			cmd.Dir = "./cmd/bench/crawler-rust"
 		default:
 			return benchmarkCompleteMsg{
 				result: crawlerResult{Language: language, ReqPerSec: 0, TimeTaken: 0},
