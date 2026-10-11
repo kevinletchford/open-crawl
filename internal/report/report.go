@@ -108,3 +108,30 @@ func Text(w io.Writer, r *audit.Report) {
 	tw.Flush()
 	fmt.Fprintln(w, "\nexact = from public signals · simulated = our requests with the agent's user agent, not the real agent · heuristic = an inference")
 }
+
+// TextComparison prints what changed between two saved audits.
+func TextComparison(w io.Writer, c audit.Comparison, oldID, newID int64) {
+	fmt.Fprintf(w, "\nChanges since audit #%d (this is #%d)\n", oldID, newID)
+	if c.Empty() {
+		fmt.Fprintln(w, "  nothing changed")
+		return
+	}
+	if c.PagesBefore != c.PagesAfter {
+		fmt.Fprintf(w, "  note: the audits fetched different numbers of pages (%d → %d), so changes may reflect coverage, not the site\n", c.PagesBefore, c.PagesAfter)
+	}
+	if c.ScoreBefore != c.ScoreAfter && c.ScoreBefore >= 0 && c.ScoreAfter >= 0 {
+		fmt.Fprintf(w, "  score: %d → %d\n", c.ScoreBefore, c.ScoreAfter)
+	}
+	for _, a := range c.AgentChanges {
+		fmt.Fprintf(w, "  %s on /: %s → %s\n", a.Agent, a.Before, a.After)
+	}
+	for _, f := range c.New {
+		fmt.Fprintf(w, "  + new      %-7s %s\n", strings.ToUpper(string(f.Severity)), f.Title)
+	}
+	for _, f := range c.Resolved {
+		fmt.Fprintf(w, "  - resolved %-7s %s\n", strings.ToUpper(string(f.Severity)), f.Title)
+	}
+	for _, f := range c.Changed {
+		fmt.Fprintf(w, "  ~ changed  %-7s %s (count %d → %d)\n", strings.ToUpper(string(f.Severity)), f.Title, f.Before, f.Count)
+	}
+}

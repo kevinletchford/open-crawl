@@ -18,6 +18,8 @@ jobs:
           go-version-file: go.mod
       - name: gofmt, vet and race-enabled tests
         run: make check
+      - name: Chrome render test (verbose, to show whether it ran or skipped)
+        run: go test -count=1 -v -run TestRenderRunsJavaScript ./internal/render
       - name: Build the CLI
         run: make opencrawl
       - name: Build the benchmark tools
