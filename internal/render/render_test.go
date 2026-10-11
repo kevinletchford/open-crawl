@@ -5,13 +5,15 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
 )
 
 // TestRenderRunsJavaScript needs Chrome. It is skipped when Chrome can't be
-// started, so `go test` still passes on machines without it.
+// started, so `go test` still passes on machines without it, unless
+// OPENCRAWL_REQUIRE_CHROME is set, as it is in CI.
 func TestRenderRunsJavaScript(t *testing.T) {
 	if testing.Short() {
 		t.Skip("needs Chrome")
@@ -28,6 +30,9 @@ document.getElementById("ua").textContent = navigator.userAgent;
 	ctx := context.Background()
 	pool, err := New(ctx, Options{Settle: 3 * time.Second})
 	if err != nil {
+		if os.Getenv("OPENCRAWL_REQUIRE_CHROME") != "" {
+			t.Fatalf("Chrome is required (OPENCRAWL_REQUIRE_CHROME is set): %v", err)
+		}
 		t.Skipf("Chrome unavailable: %v", err)
 	}
 	defer pool.Close()

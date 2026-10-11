@@ -16,10 +16,15 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      # Ubuntu 23.10+ blocks the unprivileged user namespaces Chrome's
+      # sandbox needs. Lift that on the runner rather than running Chrome
+      # without its sandbox.
+      - name: Allow Chrome's sandbox
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: gofmt, vet and race-enabled tests
         run: make check
-      - name: Chrome render test (verbose, to show whether it ran or skipped)
-        run: go test -count=1 -v -run TestRenderRunsJavaScript ./internal/render
+        env:
+          OPENCRAWL_REQUIRE_CHROME: "1"
       - name: Build the CLI
         run: make opencrawl
       - name: Build the benchmark tools
