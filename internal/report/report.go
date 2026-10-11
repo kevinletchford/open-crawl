@@ -34,8 +34,9 @@ var tmpl = template.Must(template.New("report").Funcs(template.FuncMap{
 		}
 		return ps
 	},
-	"more": func(ps []audit.PageResult) int { return max(0, len(ps)-maxMatrixRows) },
-	"join": strings.Join,
+	"more":    func(ps []audit.PageResult) int { return max(0, len(ps)-maxMatrixRows) },
+	"join":    strings.Join,
+	"percent": func(f float64) string { return fmt.Sprintf("%.0f%%", f*100) },
 	"tip": func(a audit.AgentAccess) string {
 		parts := []string{a.Robots.Explain()}
 		if len(a.Directives) > 0 {

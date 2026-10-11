@@ -25,6 +25,7 @@ import (
 	"github.com/kevinletchford/open-crawl/internal/agents"
 	"github.com/kevinletchford/open-crawl/internal/audit"
 	"github.com/kevinletchford/open-crawl/internal/fetch"
+	"github.com/kevinletchford/open-crawl/internal/render"
 	"github.com/kevinletchford/open-crawl/internal/report"
 	"github.com/kevinletchford/open-crawl/internal/robots"
 )
@@ -110,6 +111,9 @@ func runAudit(ctx context.Context, args []string) error {
 	out := fs.String("out", "", "directory for report.json and report.html (default: opencrawl-<host>-<time>)")
 	jsonOnly := fs.Bool("json", false, "print the JSON report to stdout and write no files")
 	quiet := fs.Bool("q", false, "no progress output")
+	renderJS := fs.Bool("render", false, "render pages in headless Chrome and compare them with the raw HTML")
+	renderPages := fs.Int("render-pages", 10, "pages to render with -render")
+	chrome := fs.String("chrome", "", "path to Chrome or Chromium for -render (default: search the usual places)")
 	fs.Usage = func() {
 		fmt.Fprintln(fs.Output(), "Usage: opencrawl audit [flags] <url>")
 		fs.PrintDefaults()
@@ -139,6 +143,15 @@ func runAudit(ctx context.Context, args []string) error {
 	}
 	if !*quiet {
 		cfg.Progress = func(msg string) { fmt.Fprintln(os.Stderr, "  "+msg) }
+	}
+	if *renderJS {
+		pool, err := render.New(ctx, render.Options{ExecPath: *chrome})
+		if err != nil {
+			return fmt.Errorf("%w\n-render needs Chrome or Chromium; install it or pass -chrome /path/to/chrome", err)
+		}
+		defer pool.Close()
+		cfg.Renderer = pool
+		cfg.RenderPages = *renderPages
 	}
 
 	r, err := audit.Run(ctx, cfg)

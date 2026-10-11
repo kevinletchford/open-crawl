@@ -3,6 +3,7 @@ package htmlx
 import (
 	"net/url"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -69,6 +70,15 @@ func TestParseServerRenderedPage(t *testing.T) {
 	}
 	if p.EmptyAppRoot {
 		t.Error("server-rendered page flagged as an empty app root")
+	}
+	if !reflect.DeepEqual(p.HeadingTexts, []string{"Plans", "Team", "Enterprise"}) {
+		t.Errorf("heading texts = %v", p.HeadingTexts)
+	}
+	if len(p.Blocks) != 4 || p.Blocks[3] != "Our team plan costs £10 a month, and it's billed yearly." {
+		t.Errorf("blocks = %q", p.Blocks)
+	}
+	if !strings.Contains(p.Text, "our team plan costs £10") || strings.Contains(p.Text, "not counted") {
+		t.Errorf("text = %q", p.Text)
 	}
 }
 

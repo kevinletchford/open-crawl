@@ -137,6 +137,29 @@ footer { margin-top: 48px; font-size: 13px; color: var(--muted); border-top: 1px
   </div>
   {{if gt (more .Pages) 0}}<p class="muted">{{more .Pages}} more URLs are in the JSON report.</p>{{end}}
 
+  {{if .Settings.RenderPages}}
+  <h2>Render diff</h2>
+  <p>Each page was rendered in headless Chrome and compared with the raw HTML that crawlers which don't run JavaScript receive. "Missing" means visible after rendering but absent from the raw HTML.</p>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>URL</th><th>Raw words</th><th>Rendered words</th><th>Missing</th><th>Missing headings</th><th>Sample of missing text</th></tr></thead>
+    <tbody>
+    {{range .Pages}}{{if .Render}}
+      <tr>
+        <td class="mono url">{{.URL}}</td>
+        {{if .Render.Error}}<td colspan="5" class="muted">render failed: {{.Render.Error}}</td>{{else}}
+        <td>{{.Render.RawWords}}</td>
+        <td>{{.Render.RenderedWords}}</td>
+        <td>{{.Render.MissingWords}} ({{percent .Render.MissingShare}})</td>
+        <td>{{join .Render.MissingHeadings ", "}}</td>
+        <td class="muted">{{join .Render.MissingBlocks " · "}}</td>{{end}}
+      </tr>
+    {{end}}{{end}}
+    </tbody>
+  </table>
+  </div>
+  {{end}}
+
   {{if .Probes}}
   <h2>User-agent probes <span class="badge fid">simulated</span></h2>
   <p>Each page was fetched with an ordinary browser user agent, then with each agent's user agent, from OpenCrawl's network. Firewalls that verify bots by IP or signature may treat the real agents differently. Your CDN or server logs are the ground truth.</p>

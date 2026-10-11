@@ -30,8 +30,18 @@ type Page struct {
 	// because it is exactly what such a crawler sees.
 	WordCount int            `json:"word_count"`
 	Headings  map[string]int `json:"headings,omitempty"`
-	Scripts   int            `json:"scripts"`
-	JSONLD    int            `json:"json_ld"`
+	// HeadingTexts are the h1–h6 texts, whitespace-collapsed, in order.
+	HeadingTexts []string `json:"-"`
+	// Blocks are the texts of block-level elements (headings, paragraphs,
+	// list items, table cells…), whitespace-collapsed, in order. Each holds
+	// only the element's own text, not that of blocks nested inside it, so
+	// blocks never overlap.
+	Blocks []string `json:"-"`
+	// Text is all the visible body text, whitespace-collapsed and
+	// lower-cased, for containment checks.
+	Text    string `json:"-"`
+	Scripts int    `json:"scripts"`
+	JSONLD  int    `json:"json_ld"`
 	// EmptyAppRoot is true when the body holds a single-page-app mount point
 	// (#root, #app, #__next, #__nuxt…) with no text in it.
 	EmptyAppRoot bool `json:"empty_app_root,omitempty"`
@@ -61,6 +71,11 @@ func Parse(base *url.URL, body []byte) Page {
 
 	var walk func(n *html.Node, inBody bool)
 	walk = func(n *html.Node, inBody bool) {
+		if n.Type == html.ElementNode && inBody && blockElements[n.DataAtom] {
+			if t := Collapse(ownText(n)); t != "" {
+				p.Blocks = append(p.Blocks, t)
+			}
+		}
 		if n.Type == html.ElementNode {
 			switch n.DataAtom {
 			case atom.Html:
@@ -102,6 +117,9 @@ func Parse(base *url.URL, body []byte) Page {
 				return
 			case atom.H1, atom.H2, atom.H3, atom.H4, atom.H5, atom.H6:
 				p.Headings[n.Data]++
+				if t := Collapse(visibleText(n)); t != "" {
+					p.HeadingTexts = append(p.HeadingTexts, t)
+				}
 			case atom.Div, atom.Main, atom.Section:
 				if inBody && appRootIDs[attr(n, "id")] && strings.TrimSpace(visibleText(n)) == "" {
 					p.EmptyAppRoot = true
@@ -128,8 +146,25 @@ func Parse(base *url.URL, body []byte) Page {
 	walk(doc, false)
 
 	p.WordCount = countWords(text.String())
+	p.Text = strings.ToLower(Collapse(text.String()))
 	return p
 }
+
+// blockElements hold a unit of text worth comparing between versions of a
+// page.
+var blockElements = map[atom.Atom]bool{
+	atom.H1: true, atom.H2: true, atom.H3: true, atom.H4: true, atom.H5: true, atom.H6: true,
+	atom.P: true, atom.Li: true, atom.Td: true, atom.Th: true, atom.Dt: true, atom.Dd: true,
+	atom.Blockquote: true, atom.Pre: true, atom.Figcaption: true, atom.Summary: true,
+}
+
+// Collapse trims s and replaces each run of whitespace with one space.
+func Collapse(s string) string {
+	return strings.Join(strings.Fields(s), " ")
+}
+
+// CountWords counts words the same way WordCount does.
+func CountWords(s string) int { return countWords(s) }
 
 // Directives returns the lower-cased robots directives a page gives the meta
 // name (such as "robots" or "googlebot").
@@ -228,6 +263,29 @@ func visibleText(n *html.Node) string {
 		}
 	}
 	walk(n)
+	return b.String()
+}
+
+// ownText is visibleText without the text of nested block elements.
+func ownText(n *html.Node) string {
+	var b strings.Builder
+	var walk func(*html.Node)
+	walk = func(c *html.Node) {
+		for ; c != nil; c = c.NextSibling {
+			if c.Type == html.ElementNode {
+				if blockElements[c.DataAtom] || c.DataAtom == atom.Script || c.DataAtom == atom.Style || c.DataAtom == atom.Template {
+					continue
+				}
+				walk(c.FirstChild)
+				continue
+			}
+			if c.Type == html.TextNode {
+				b.WriteString(c.Data)
+				b.WriteString(" ")
+			}
+		}
+	}
+	walk(n.FirstChild)
 	return b.String()
 }
 

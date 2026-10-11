@@ -32,6 +32,7 @@ func findings(r *Report) []Finding {
 	agentRobotsFindings(r, add)
 	directiveFindings(r, add)
 	probeFindings(r, add)
+	renderFindings(r, add)
 	thinHTMLFinding(r, add)
 	crawlFindings(r, add)
 
@@ -338,7 +339,8 @@ func probeFindings(r *Report, add func(Finding)) {
 func thinHTMLFinding(r *Report, add func(Finding)) {
 	var thin []string
 	for _, p := range r.Pages {
-		if p.Fetched && p.Status >= 200 && p.Status < 300 && isHTML(p.ContentType) &&
+		rendered := p.Render != nil && p.Render.Error == ""
+		if !rendered && p.Fetched && p.Status >= 200 && p.Status < 300 && isHTML(p.ContentType) &&
 			p.WordCount < thinWords && (p.EmptyAppRoot || p.Scripts > 0) {
 			thin = append(thin, p.URL)
 		}
@@ -360,6 +362,62 @@ func thinHTMLFinding(r *Report, add func(Finding)) {
 		Fix:    "Server-render or pre-render the main content of these pages.",
 		Agents: noJS, URLs: thin, Count: len(thin),
 	})
+}
+
+// Pages count as depending on JavaScript when at least this share of the
+// rendered words, and at least jsMinWords words, are missing from the raw
+// HTML, or when a rendered heading is.
+const (
+	jsMinShare = 0.25
+	jsMinWords = 25
+)
+
+func renderFindings(r *Report, add func(Finding)) {
+	var dependent, failed, details []string
+	missingWords := 0
+	for _, p := range r.Pages {
+		if p.Render == nil {
+			continue
+		}
+		d := p.Render
+		if d.Error != "" {
+			failed = append(failed, p.URL)
+			continue
+		}
+		if (d.MissingShare >= jsMinShare && d.MissingWords >= jsMinWords) || len(d.MissingHeadings) > 0 {
+			dependent = append(dependent, p.URL)
+			missingWords += d.MissingWords
+			line := fmt.Sprintf("%s: %d of %d words only appear after JavaScript runs", p.URL, d.MissingWords, d.RenderedWords)
+			if len(d.MissingHeadings) > 0 {
+				line += fmt.Sprintf("; missing headings: %q", d.MissingHeadings)
+			}
+			details = append(details, line)
+		}
+	}
+	if len(dependent) > 0 {
+		var noJS []string
+		for _, a := range r.Agents {
+			if a.Fetches() && !a.RendersJS {
+				noJS = append(noJS, a.Name)
+			}
+		}
+		add(Finding{
+			ID: "js_dependent_content", Severity: SeverityWarning, Fidelity: Exact,
+			Title: fmt.Sprintf("%s content that only appears after JavaScript runs", plural(len(dependent), "page has", "pages have")),
+			Detail: "Each page was rendered in headless Chrome and compared with its raw HTML. Agents that don't run JavaScript (" +
+				strings.Join(noJS, ", ") + ") receive only the raw HTML, so they don't see this content.\n" + strings.Join(details, "\n"),
+			Fix:    "Server-render or pre-render this content, so it's in the HTML response.",
+			Agents: noJS, URLs: dependent, Count: len(dependent),
+		})
+	}
+	if len(failed) > 0 {
+		add(Finding{
+			ID: "render_failed", Severity: SeverityInfo, Fidelity: Exact,
+			Title:  fmt.Sprintf("%s couldn't be rendered in Chrome", plural(len(failed), "page", "pages")),
+			Detail: "These pages timed out or failed in headless Chrome, so they have no render diff.",
+			URLs:   failed, Count: len(failed),
+		})
+	}
 }
 
 func crawlFindings(r *Report, add func(Finding)) {
