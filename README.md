@@ -40,6 +40,7 @@ opencrawl agents [-json]         list the agents in the registry
 opencrawl history [host]         list saved audits
 opencrawl show <id>              re-print a saved audit, or write its report files
 opencrawl compare <id> [id]      what changed between two audits
+opencrawl mcp                    serve saved audits to AI tools over MCP
 ```
 
 Audits are saved to `~/.opencrawl/opencrawl.db` (or `$OPENCRAWL_DB`), and each
@@ -50,6 +51,21 @@ Useful `audit` flags: `-max-pages`, `-agents GPTBot,ClaudeBot`, `-probe-pages 0`
 to skip user-agent probes, `-render` to compare each page with what headless
 Chrome renders (needs Chrome or Chromium), `-json` to print the report to
 stdout, `-out DIR`.
+
+## Ask your AI tools about an audit (MCP)
+
+`opencrawl mcp` serves saved audits over the Model Context Protocol (stdio),
+so an assistant can answer questions like "which product pages can't
+ClaudeBot read?" from real crawl data. To add it to Claude Code:
+
+```console
+$ claude mcp add opencrawl -- /path/to/bin/opencrawl mcp
+```
+
+Tools: `list_audits`, `audit_summary`, `query_access` (agent, state, path
+glob), `get_finding`, `compare_audits`, `list_agents`, and `run_audit`, which
+crawls politely and is capped at 100 pages. The server tells the client
+model to pass on each finding's fidelity.
 
 ## Being a polite crawler
 
@@ -82,6 +98,7 @@ a release; operators change these pages.
 | `internal/audit` | The crawl, per-agent access, probes and findings |
 | `internal/render` | Headless Chrome pool for the render diff |
 | `internal/store` | SQLite audit history (pure Go) |
+| `internal/mcpserver` | MCP tools over saved audits |
 | `internal/report` | HTML report and terminal summary |
 | `cmd/bench/` | The Go/Rust/TypeScript throughput benchmarks, their TUI and the synthetic server |
 

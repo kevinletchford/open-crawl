@@ -22,9 +22,12 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+
 	"github.com/kevinletchford/open-crawl/internal/agents"
 	"github.com/kevinletchford/open-crawl/internal/audit"
 	"github.com/kevinletchford/open-crawl/internal/fetch"
+	"github.com/kevinletchford/open-crawl/internal/mcpserver"
 	"github.com/kevinletchford/open-crawl/internal/render"
 	"github.com/kevinletchford/open-crawl/internal/report"
 	"github.com/kevinletchford/open-crawl/internal/robots"
@@ -41,6 +44,7 @@ Usage:
   opencrawl history [host]         list saved audits
   opencrawl show <id>              re-print a saved audit, or write its report files
   opencrawl compare <id> [id]      what changed between two audits (default: the one before)
+  opencrawl mcp                    serve saved audits to AI tools over MCP (stdio)
 
 Audits are saved to $OPENCRAWL_DB or ~/.opencrawl/opencrawl.db.
 
@@ -69,6 +73,8 @@ func main() {
 		err = runShow(ctx, args)
 	case "compare":
 		err = runCompare(ctx, args)
+	case "mcp":
+		err = runMCP(ctx, args)
 	case "-h", "--help", "help":
 		fmt.Print(usage)
 	default:
@@ -321,6 +327,21 @@ func runShow(ctx context.Context, args []string) error {
 		fmt.Printf("\nReport: %s\n", htmlPath)
 	}
 	return nil
+}
+
+func runMCP(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("mcp", flag.ContinueOnError)
+	dbPath := dbFlag(fs)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	st, err := store.Open(*dbPath)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	// stdout carries the protocol, so nothing else may print there.
+	return mcpserver.New(st).Run(ctx, &mcp.StdioTransport{})
 }
 
 func runCompare(ctx context.Context, args []string) error {
