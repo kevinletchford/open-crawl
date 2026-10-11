@@ -41,6 +41,11 @@ type Config struct {
 	IgnoreRobots bool
 	UserAgent    string // the audit's own user agent, default fetch.DefaultUserAgent
 
+	// Renderer, if set, renders up to RenderPages pages with JavaScript so
+	// they can be compared with their raw HTML.
+	Renderer    Renderer
+	RenderPages int // default 10
+
 	// Progress, if set, receives one-line progress messages.
 	Progress func(msg string)
 }
@@ -70,6 +75,9 @@ func (c *Config) defaults() error {
 	if c.UserAgent == "" {
 		c.UserAgent = fetch.DefaultUserAgent
 	}
+	if c.RenderPages <= 0 {
+		c.RenderPages = 10
+	}
 	if len(c.Agents) == 0 {
 		c.Agents = agents.All()
 	}
@@ -97,6 +105,9 @@ func Run(ctx context.Context, cfg Config) (*Report, error) {
 			Delay:       cfg.Delay,
 		}),
 		seen: map[string]bool{},
+		raw:  map[string]htmlx.Page{},
+		// recorded holds the URLs already in pages.
+		recorded: map[string]bool{},
 	}
 	began := time.Now()
 
@@ -131,6 +142,7 @@ func Run(ctx context.Context, cfg Config) (*Report, error) {
 		return strings.Compare(x.URL, y.URL)
 	})
 
+	a.renderPages(ctx)
 	probes := a.probe(ctx)
 
 	r := &Report{
@@ -144,6 +156,7 @@ func Run(ctx context.Context, cfg Config) (*Report, error) {
 			Concurrency:  cfg.Concurrency,
 			DelayMs:      cfg.Delay.Milliseconds(),
 			ProbePages:   cfg.ProbePages,
+			RenderPages:  renderedCount(cfg),
 			IgnoreRobots: cfg.IgnoreRobots,
 			UserAgent:    cfg.UserAgent,
 		},
@@ -172,6 +185,9 @@ type auditor struct {
 	mu    sync.Mutex
 	seen  map[string]bool
 	pages []PageResult
+	// raw holds each fetched HTML page's parse, for the render diff.
+	raw      map[string]htmlx.Page
+	recorded map[string]bool
 }
 
 func parseStart(raw string) (*url.URL, error) {
@@ -355,6 +371,29 @@ func (a *auditor) visit(ctx context.Context, it crawlItem) []string {
 		a.record(pr)
 		return nil
 	}
+
+	// A redirect makes this the same document as its target, so record it
+	// once, under the URL it ended at.
+	pageURL := it.url
+	if final, err := url.Parse(res.FinalURL); err == nil {
+		final = normalizeURL(final)
+		if final.String() != it.url.String() {
+			if final.Host != it.url.Host {
+				pr.Error = "redirects to another host: " + final.String()
+				a.record(pr)
+				return nil
+			}
+			a.mu.Lock()
+			dup := a.seen[final.String()] && a.recorded[final.String()]
+			a.seen[final.String()] = true
+			a.mu.Unlock()
+			if dup {
+				return nil
+			}
+			pr.RequestedURL, pr.URL = pr.URL, final.String()
+			pageURL = final
+		}
+	}
 	pr.ContentType = res.Header.Get("Content-Type")
 	pr.XRobotsTag = res.Header.Values("X-Robots-Tag")
 
@@ -372,6 +411,9 @@ func (a *auditor) visit(ctx context.Context, it crawlItem) []string {
 		pr.RobotsMeta = page.Directives("robots")
 		dd := collectDirectives(page, pr.XRobotsTag, tokens(a.cfg.Agents))
 		d = &dd
+		a.mu.Lock()
+		a.raw[pr.URL] = page
+		a.mu.Unlock()
 		if res.OK() && !slices.Contains(dd.generic, "nofollow") && !slices.Contains(dd.generic, "none") {
 			links = page.Links
 		}
@@ -379,9 +421,17 @@ func (a *auditor) visit(ctx context.Context, it crawlItem) []string {
 		dd := collectDirectives(htmlx.Page{}, pr.XRobotsTag, tokens(a.cfg.Agents))
 		d = &dd
 	}
-	pr.Access = a.evaluateAll(it.url, d)
+	pr.Access = a.evaluateAll(pageURL, d)
 	a.record(pr)
 	return links
+}
+
+// renderedCount is the RenderPages setting, or 0 when rendering is off.
+func renderedCount(c Config) int {
+	if c.Renderer == nil {
+		return 0
+	}
+	return c.RenderPages
 }
 
 // mayFetch reports whether the audit's own crawler may fetch u.
@@ -397,8 +447,12 @@ func (a *auditor) record(pr PageResult) {
 		}
 	}
 	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.recorded[pr.URL] {
+		return // two redirects in one level reached the same page
+	}
+	a.recorded[pr.URL] = true
 	a.pages = append(a.pages, pr)
-	a.mu.Unlock()
 }
 
 func (a *auditor) evaluateAll(u *url.URL, d *pageDirectives) []AgentAccess {

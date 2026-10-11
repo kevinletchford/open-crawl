@@ -47,7 +47,11 @@ func fakeSite(t *testing.T, robotsStatus int) *httptest.Server {
 		case "/":
 			html(`<html><head><title>Home</title></head><body><h1>Home</h1><p>` + words + `</p>
 <a href="/about">About</a> <a href="/app">App</a> <a href="/hidden">Hidden</a> <a href="/gone">Gone</a>
-<a href="/private/report">Report</a> <a href="https://elsewhere.example/">Out</a> <a href="/logo.png">Logo</a></body></html>`)
+<a href="/private/report">Report</a> <a href="/about/">About again</a> <a href="/old-about">Old about</a> <a href="https://elsewhere.example/">Out</a> <a href="/logo.png">Logo</a></body></html>`)
+		case "/about/":
+			http.Redirect(w, r, "/about", http.StatusMovedPermanently)
+		case "/old-about":
+			http.Redirect(w, r, "/about/", http.StatusMovedPermanently)
 		case "/about":
 			html(`<html><head><title>About</title></head><body><h1>About</h1><p>` + words + `</p></body></html>`)
 		case "/app":
@@ -115,6 +119,18 @@ func TestAuditFindsWhatTheSiteDoes(t *testing.T) {
 		if pageByPath(r, p) == nil {
 			t.Errorf("page %s not found", p)
 		}
+	}
+	n := 0
+	for _, p := range r.Pages {
+		if strings.HasSuffix(p.URL, "/about") {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Errorf("/about recorded %d times; redirects to it should collapse into one page", n)
+	}
+	if pageByPath(r, "/about/") != nil || pageByPath(r, "/old-about") != nil {
+		t.Error("redirecting URLs should be recorded under their final URL")
 	}
 	if pageByPath(r, "/logo.png") != nil {
 		t.Error("image link should not be crawled")

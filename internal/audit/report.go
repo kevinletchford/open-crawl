@@ -73,6 +73,7 @@ type Settings struct {
 	Concurrency  int    `json:"concurrency"`
 	DelayMs      int64  `json:"delay_ms"`
 	ProbePages   int    `json:"probe_pages"`
+	RenderPages  int    `json:"render_pages"`
 	IgnoreRobots bool   `json:"ignore_robots"`
 	UserAgent    string `json:"user_agent"`
 }
@@ -113,10 +114,12 @@ type PageResult struct {
 	Fetched    bool   `json:"fetched"`
 	SkipReason string `json:"skip_reason,omitempty"`
 
-	Status      int    `json:"status,omitempty"`
-	FinalURL    string `json:"final_url,omitempty"`
-	ContentType string `json:"content_type,omitempty"`
-	Error       string `json:"error,omitempty"`
+	// RequestedURL is the URL that was linked, when it redirected to URL.
+	RequestedURL string `json:"requested_url,omitempty"`
+	Status       int    `json:"status,omitempty"`
+	FinalURL     string `json:"final_url,omitempty"`
+	ContentType  string `json:"content_type,omitempty"`
+	Error        string `json:"error,omitempty"`
 
 	Title     string         `json:"title,omitempty"`
 	Canonical string         `json:"canonical,omitempty"`
@@ -132,6 +135,10 @@ type PageResult struct {
 	RobotsMeta []string `json:"robots_meta,omitempty"`
 
 	Access []AgentAccess `json:"access"`
+
+	// Render compares the raw HTML with the DOM after JavaScript ran. It is
+	// nil when the page wasn't rendered.
+	Render *RenderDiff `json:"render,omitempty"`
 }
 
 // Access states, from most to least open.
