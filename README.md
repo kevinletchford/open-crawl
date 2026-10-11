@@ -37,10 +37,19 @@ outside can.
 opencrawl audit  [flags] <url>   crawl a site and report access for every AI agent
 opencrawl robots [flags] <url>   check one URL against robots.txt for every agent
 opencrawl agents [-json]         list the agents in the registry
+opencrawl history [host]         list saved audits
+opencrawl show <id>              re-print a saved audit, or write its report files
+opencrawl compare <id> [id]      what changed between two audits
 ```
 
+Audits are saved to `~/.opencrawl/opencrawl.db` (or `$OPENCRAWL_DB`), and each
+new audit of a host prints what changed since the last one. `-no-save` skips
+saving.
+
 Useful `audit` flags: `-max-pages`, `-agents GPTBot,ClaudeBot`, `-probe-pages 0`
-to skip user-agent probes, `-json` to print the report to stdout, `-out DIR`.
+to skip user-agent probes, `-render` to compare each page with what headless
+Chrome renders (needs Chrome or Chromium), `-json` to print the report to
+stdout, `-out DIR`.
 
 ## Being a polite crawler
 
@@ -71,6 +80,8 @@ a release; operators change these pages.
 | `internal/htmlx` | What a non-JS crawler gets from raw HTML |
 | `internal/sitemap` | Sitemap and sitemap-index parsing |
 | `internal/audit` | The crawl, per-agent access, probes and findings |
+| `internal/render` | Headless Chrome pool for the render diff |
+| `internal/store` | SQLite audit history (pure Go) |
 | `internal/report` | HTML report and terminal summary |
 | `cmd/bench/` | The Go/Rust/TypeScript throughput benchmarks, their TUI and the synthetic server |
 
