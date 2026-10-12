@@ -19,9 +19,6 @@ import (
 	"github.com/kevinletchford/open-crawl/internal/store"
 )
 
-// Version is reported to MCP clients.
-const Version = "0.1.0"
-
 const instructions = `open-crawl audits what AI crawlers (GPTBot, ClaudeBot, PerplexityBot, Google-Extended…) may fetch from a website and what they receive.
 
 Every finding has a fidelity. Pass it on when you answer:
@@ -42,6 +39,8 @@ type Options struct {
 	// ChromePath is the browser used when run_audit renders pages. Empty
 	// means search the usual install locations.
 	ChromePath string
+	// Version is reported to clients. Default "dev".
+	Version string
 }
 
 // Server serves audit data from a store.
@@ -64,6 +63,9 @@ type Server struct {
 // New returns a server over st with every tool registered.
 func New(st *store.Store, o Options) *Server {
 	s := &Server{st: st, run: audit.Run, analyze: logs.AnalyzeFiles}
+	if o.Version == "" {
+		o.Version = "dev"
+	}
 	s.ctx, s.stop = context.WithCancel(context.Background())
 	s.renderer = func(ctx context.Context) (audit.Renderer, func(), error) {
 		pool, err := render.New(ctx, render.Options{ExecPath: o.ChromePath})
@@ -72,7 +74,7 @@ func New(st *store.Store, o Options) *Server {
 		}
 		return pool, pool.Close, nil
 	}
-	s.srv = mcp.NewServer(&mcp.Implementation{Name: "open-crawl", Version: Version},
+	s.srv = mcp.NewServer(&mcp.Implementation{Name: "open-crawl", Version: o.Version},
 		&mcp.ServerOptions{Instructions: instructions})
 
 	mcp.AddTool(s.srv, &mcp.Tool{Name: "list_audits",

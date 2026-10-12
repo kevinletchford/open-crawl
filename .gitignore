@@ -53,3 +53,6 @@ opencrawl-*/
 
 # macOS
 .DS_Store
+
+# GoReleaser output
+dist/

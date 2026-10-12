@@ -1,11 +1,26 @@
 # open-crawl
 
 See what AI crawlers may fetch from your site, and what they get when they do.
+It runs on your machine, and connects to your AI assistant over MCP.
 
 ```console
-$ make opencrawl
-$ ./bin/opencrawl audit https://example.com
+$ go install github.com/kevinletchford/open-crawl/cmd/opencrawl@latest
+$ opencrawl audit https://example.com
+$ opencrawl mcp install      # then ask your assistant about your site
 ```
+
+## Install
+
+- **Go:** `go install github.com/kevinletchford/open-crawl/cmd/opencrawl@latest`
+- **Binaries:** download an archive for macOS, Linux or Windows from
+  [Releases](https://github.com/kevinletchford/open-crawl/releases). The macOS
+  binaries aren't notarized yet, so remove the quarantine flag after
+  unpacking: `xattr -d com.apple.quarantine ./opencrawl`.
+- **From source:** `make opencrawl` builds `bin/opencrawl`.
+
+`-render` and `render: true` need Chrome or Chromium; everything else is one
+self-contained binary. `opencrawl doctor` checks the database, Chrome and which
+AI clients are set up.
 
 `opencrawl audit` reads robots.txt, llms.txt and your sitemaps, crawls up to
 50 pages politely, and checks every page against 19 AI crawlers, fetchers and
@@ -40,8 +55,11 @@ opencrawl agents [-json]         list the agents in the registry
 opencrawl history [host]         list saved audits
 opencrawl show <id>              re-print a saved audit, or write its report files
 opencrawl compare <id> [id]      what changed between two audits
-opencrawl mcp                    serve saved audits to AI tools over MCP
+opencrawl mcp                    serve audits to AI tools over MCP (stdio)
+opencrawl mcp install            register it with Claude Code, Claude Desktop and Cursor
 opencrawl logs [flags] <file>…   what real AI agents requested and were served
+opencrawl doctor                 check the database, Chrome and MCP client setup
+opencrawl version
 ```
 
 Audits are saved to `~/.opencrawl/opencrawl.db` (or `$OPENCRAWL_DB`), and each
@@ -55,13 +73,19 @@ stdout, `-out DIR`.
 
 ## Ask your AI tools about an audit (MCP)
 
-`opencrawl mcp` serves saved audits over the Model Context Protocol (stdio),
-so an assistant can answer questions like "which product pages can't
-ClaudeBot read?" from real crawl data. To add it to Claude Code:
+`opencrawl mcp` serves audits over the Model Context Protocol (stdio), so an
+assistant can run audits and answer questions like "which product pages can't
+ClaudeBot read?" from real crawl data. To set it up:
 
 ```console
-$ claude mcp add opencrawl -- /path/to/bin/opencrawl mcp
+$ opencrawl mcp install            # every client found on this machine
+$ opencrawl mcp install -client claude-code -dry-run
 ```
+
+It adds the server to Claude Code (at user scope, through `claude mcp add`),
+Claude Desktop and Cursor (in their JSON config, keeping a `.bak` copy). An
+existing `opencrawl` entry that points elsewhere is left alone unless you pass
+`-force`. For any other client, run `opencrawl mcp` as a stdio server.
 
 Tools:
 
@@ -127,7 +151,8 @@ a release; operators change these pages.
 | `internal/audit` | The crawl, per-agent access, probes and findings |
 | `internal/render` | Headless Chrome pool for the render diff |
 | `internal/store` | SQLite audit history (pure Go) |
-| `internal/mcpserver` | MCP tools over saved audits |
+| `internal/mcpserver` | MCP tools: audit jobs, saved audits, log analysis |
+| `internal/mcpconfig` | `mcp install`: registers the server with AI clients |
 | `internal/logs` | Access-log parsing, bot verification and analysis |
 | `internal/report` | HTML report and terminal summary |
 | `cmd/bench/` | The Go/Rust/TypeScript throughput benchmarks, their TUI and the synthetic server |
