@@ -14,37 +14,64 @@ import (
 
 	"github.com/kevinletchford/open-crawl/internal/agents"
 	"github.com/kevinletchford/open-crawl/internal/audit"
+	"github.com/kevinletchford/open-crawl/internal/logs"
+	"github.com/kevinletchford/open-crawl/internal/render"
 	"github.com/kevinletchford/open-crawl/internal/store"
 )
 
 // Version is reported to MCP clients.
 const Version = "0.1.0"
 
-// maxRunPages caps run_audit, so a tool call can't start a large crawl.
-const maxRunPages = 100
-
 const instructions = `open-crawl audits what AI crawlers (GPTBot, ClaudeBot, PerplexityBot, Google-Extended…) may fetch from a website and what they receive.
 
 Every finding has a fidelity. Pass it on when you answer:
 - exact: from public signals (robots.txt, meta robots, X-Robots-Tag, raw HTML, a headless-Chrome render diff).
-- simulated: requests sent with an agent's user agent from open-crawl's network. Firewalls that verify bots by IP may treat the real agent differently.
+- simulated: requests sent with an agent's user agent from the user's own machine and network. The real agents crawl from their operators' data centres; firewalls that verify bots by IP may treat them differently.
 - heuristic: an inference that can be wrong.
 
 The audit can't tell whether content was used for training, how it ranks, or whether an assistant cites it. Don't claim otherwise.
 
-Start with list_audits or audit_summary. Use query_access for per-URL, per-agent questions. Most tools default to the latest audit of a host when no audit_id is given.`
+Start with list_audits or audit_summary. Use query_access for per-URL, per-agent questions. Most tools default to the latest audit of a host when no audit_id is given.
+
+run_audit crawls from the user's own machine and network. A crawl can take minutes: if run_audit returns state "running", call audit_status with the job_id until it is done. Only audit sites the user owns or may audit.
+
+analyze_logs reads the site's own access logs. It is the only source here of what the real agents fetched: requests are checked against each operator's published IP ranges or reverse DNS, and spoofed ones are counted separately.`
+
+// Options configures a Server.
+type Options struct {
+	// ChromePath is the browser used when run_audit renders pages. Empty
+	// means search the usual install locations.
+	ChromePath string
+}
 
 // Server serves audit data from a store.
 type Server struct {
-	st  *store.Store
-	srv *mcp.Server
+	st   *store.Store
+	srv  *mcp.Server
+	jobs jobs
+	// ctx bounds background audits; Close cancels it.
+	ctx  context.Context
+	stop context.CancelFunc
+
 	// run performs an audit; tests replace it.
 	run func(context.Context, audit.Config) (*audit.Report, error)
+	// renderer starts a headless browser; tests replace it.
+	renderer func(context.Context) (audit.Renderer, func(), error)
+	// analyze reads access logs; tests replace it.
+	analyze func(context.Context, []string, logs.Options) (*logs.Report, error)
 }
 
 // New returns a server over st with every tool registered.
-func New(st *store.Store) *Server {
-	s := &Server{st: st, run: audit.Run}
+func New(st *store.Store, o Options) *Server {
+	s := &Server{st: st, run: audit.Run, analyze: logs.AnalyzeFiles}
+	s.ctx, s.stop = context.WithCancel(context.Background())
+	s.renderer = func(ctx context.Context) (audit.Renderer, func(), error) {
+		pool, err := render.New(ctx, render.Options{ExecPath: o.ChromePath})
+		if err != nil {
+			return nil, nil, err
+		}
+		return pool, pool.Close, nil
+	}
 	s.srv = mcp.NewServer(&mcp.Implementation{Name: "open-crawl", Version: Version},
 		&mcp.ServerOptions{Instructions: instructions})
 
@@ -61,15 +88,27 @@ func New(st *store.Store) *Server {
 	mcp.AddTool(s.srv, &mcp.Tool{Name: "list_agents",
 		Description: "The agent registry: each AI crawler, fetcher or robots.txt token with its operator, kind, whether it runs JavaScript and its documented robots.txt stance."}, s.listAgents)
 	mcp.AddTool(s.srv, &mcp.Tool{Name: "run_audit",
-		Description: fmt.Sprintf("Audit a website now and save the result. Crawls politely (robots.txt obeyed, at most %d pages) and takes from seconds to a few minutes. Only audit sites the user owns or may audit.", maxRunPages)}, s.runAudit)
+		Description: fmt.Sprintf("Audit a website now and save the result. Crawls politely from this machine (robots.txt obeyed, at most %d pages). Waits up to wait_seconds for the result; if the crawl is still going it returns state \"running\" and a job_id for audit_status. Set render to compare JavaScript-rendered pages with raw HTML. Only audit sites the user owns or may audit.", maxRunPages)}, s.runAudit)
+	mcp.AddTool(s.srv, &mcp.Tool{Name: "audit_status",
+		Description: "Wait for an audit started by run_audit and return its progress, or its summary once done."}, s.auditStatus)
+	mcp.AddTool(s.srv, &mcp.Tool{Name: "cancel_audit",
+		Description: "Stop a running audit."}, s.cancelAudit)
+	mcp.AddTool(s.srv, &mcp.Tool{Name: "analyze_logs",
+		Description: "Read web server or CDN access logs from local files (nginx/Apache combined, Cloudflare Logpush, Vercel or generic JSON lines; .gz is fine) and report what each AI agent really requested: request counts, status codes, refused and top paths. Requests are verified against operators' published IP ranges or reverse DNS; spoofed user agents are counted separately. Give site to also flag fetches of paths robots.txt disallows."}, s.analyzeLogs)
 	return s
 }
+
+// Close stops any running audits.
+func (s *Server) Close() { s.stop() }
 
 // MCP returns the underlying MCP server.
 func (s *Server) MCP() *mcp.Server { return s.srv }
 
 // Run serves on the given transport until ctx ends or the client leaves.
-func (s *Server) Run(ctx context.Context, t mcp.Transport) error { return s.srv.Run(ctx, t) }
+func (s *Server) Run(ctx context.Context, t mcp.Transport) error {
+	defer s.Close()
+	return s.srv.Run(ctx, t)
+}
 
 // AuditRef picks an audit: an explicit ID, else the latest audit of Host,
 // else the latest audit overall.
@@ -298,30 +337,4 @@ type ListAgentsOut struct {
 
 func (s *Server) listAgents(context.Context, *mcp.CallToolRequest, ListAgentsIn) (*mcp.CallToolResult, ListAgentsOut, error) {
 	return nil, ListAgentsOut{Agents: agents.All()}, nil
-}
-
-type RunAuditIn struct {
-	URL      string   `json:"url" jsonschema:"site to audit, e.g. https://example.com"`
-	MaxPages int      `json:"max_pages,omitempty" jsonschema:"pages to fetch (default 30, at most 100)"`
-	Agents   []string `json:"agents,omitempty" jsonschema:"agents to check (default: all)"`
-}
-
-func (s *Server) runAudit(ctx context.Context, _ *mcp.CallToolRequest, in RunAuditIn) (*mcp.CallToolResult, SummaryOut, error) {
-	if in.MaxPages <= 0 {
-		in.MaxPages = 30
-	}
-	in.MaxPages = min(in.MaxPages, maxRunPages)
-	list, err := agents.Select(in.Agents)
-	if err != nil {
-		return nil, SummaryOut{}, err
-	}
-	r, err := s.run(ctx, audit.Config{URL: in.URL, Agents: list, MaxPages: in.MaxPages})
-	if err != nil {
-		return nil, SummaryOut{}, err
-	}
-	id, err := s.st.Save(ctx, r)
-	if err != nil {
-		return nil, SummaryOut{}, err
-	}
-	return nil, summarize(id, r), nil
 }

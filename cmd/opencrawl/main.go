@@ -7,8 +7,6 @@
 package main
 
 import (
-	"bufio"
-	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
@@ -363,49 +361,18 @@ func runLogs(ctx context.Context, args []string) error {
 		fs.Usage()
 		return errors.New("no log files given")
 	}
-	f := logs.Format(*format)
-	switch f {
-	case logs.FormatAuto, logs.FormatCombined, logs.FormatJSON:
-	default:
-		return fmt.Errorf("unknown format %q", *format)
-	}
 	list, err := agentList(*agentNames)
 	if err != nil {
 		return err
 	}
-
-	client := fetch.New(fetch.Options{})
-	var verifier *logs.Verifier
-	if !*noVerify {
-		fmt.Fprintln(os.Stderr, "  loading published IP ranges")
-		verifier = logs.NewVerifier(ctx, client, list, net.DefaultResolver)
+	r, err := logs.AnalyzeFiles(ctx, files, logs.Options{
+		Format: logs.Format(*format), Agents: list, Site: *site,
+		Verify: !*noVerify, Resolver: net.DefaultResolver, Stdin: os.Stdin,
+		Progress: func(msg string) { fmt.Fprintln(os.Stderr, "  "+msg) },
+	})
+	if err != nil {
+		return err
 	}
-	var policy *robots.Policy
-	robotsURL := ""
-	if *site != "" {
-		u, err := url.Parse(*site)
-		if err != nil || u.Host == "" {
-			if u, err = url.Parse("https://" + *site); err != nil {
-				return fmt.Errorf("bad -site %q", *site)
-			}
-		}
-		if u.Scheme == "" {
-			u.Scheme = "https"
-		}
-		robotsURL = u.Scheme + "://" + u.Host + "/robots.txt"
-		res := client.GetLimited(ctx, robotsURL, "", robots.MaxSize)
-		p := robots.FromResponse(res.Status, res.Body, res.Err)
-		policy = &p
-	}
-
-	an := logs.NewAnalyzer(list, verifier, policy)
-	for _, name := range files {
-		if err := readLogFile(ctx, name, func(line string) { an.Line(ctx, line, f) }); err != nil {
-			return err
-		}
-	}
-	r := an.Report()
-	r.RobotsURL = robotsURL
 	if *asJSON {
 		return writeJSON(os.Stdout, r)
 	}
@@ -413,43 +380,10 @@ func runLogs(ctx context.Context, args []string) error {
 	return nil
 }
 
-// readLogFile calls fn with each line of name ("-" for stdin), gunzipping
-// .gz files.
-func readLogFile(ctx context.Context, name string, fn func(string)) error {
-	var r io.Reader = os.Stdin
-	if name != "-" {
-		f, err := os.Open(name)
-		if err != nil {
-			return err
-		}
-		defer f.Close()
-		r = f
-		if strings.HasSuffix(name, ".gz") {
-			zr, err := gzip.NewReader(f)
-			if err != nil {
-				return fmt.Errorf("%s: %w", name, err)
-			}
-			defer zr.Close()
-			r = zr
-		}
-	}
-	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 64*1024), 4<<20)
-	for sc.Scan() {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		fn(sc.Text())
-	}
-	if err := sc.Err(); err != nil {
-		return fmt.Errorf("%s: %w", name, err)
-	}
-	return nil
-}
-
 func runMCP(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("mcp", flag.ContinueOnError)
 	dbPath := dbFlag(fs)
+	chrome := fs.String("chrome", "", "path to Chrome or Chromium, for audits with render (default: search the usual places)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -459,7 +393,7 @@ func runMCP(ctx context.Context, args []string) error {
 	}
 	defer st.Close()
 	// stdout carries the protocol, so nothing else may print there.
-	return mcpserver.New(st).Run(ctx, &mcp.StdioTransport{})
+	return mcpserver.New(st, mcpserver.Options{ChromePath: *chrome}).Run(ctx, &mcp.StdioTransport{})
 }
 
 func runCompare(ctx context.Context, args []string) error {

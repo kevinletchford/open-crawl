@@ -299,7 +299,7 @@ func probeFindings(r *Report, add func(Finding)) {
 		}
 	}
 
-	caveat := " These requests came from OpenCrawl's network with the agent's user-agent string. Firewalls that verify bots by IP range, reverse DNS or signature may treat the real agent differently, in either direction. Check your CDN or server logs for requests from the agent's published IP ranges."
+	caveat := " These requests came from the network of the machine that ran this audit, with the agent's user-agent string. The real agents crawl from their operators' data centres, and firewalls that verify bots by IP range, reverse DNS or signature, or that score home and office connections differently from data-centre traffic, may treat them differently, in either direction. Check your CDN or server logs (opencrawl logs) for requests from the agent's published IP ranges."
 
 	blockedAgents := map[string][]string{}
 	for _, o := range []ProbeOutcome{ProbeBlocked, ProbeChallenged} {
@@ -330,7 +330,7 @@ func probeFindings(r *Report, add func(Finding)) {
 		add(Finding{
 			ID: "probe_inconclusive", Severity: SeverityInfo, Fidelity: Simulated,
 			Title:  fmt.Sprintf("%s inconclusive: an ordinary browser user agent was blocked too", plural(inconclusive, "probe was", "probes were")),
-			Detail: "The site blocks or challenges requests from OpenCrawl's network whatever the user agent, so the probes can't tell how it treats AI agents.",
+			Detail: "The site blocks or challenges requests from the network this audit ran from, whatever the user agent, so the probes can't tell how it treats AI agents. Running the audit from another network, or reading the site's logs with opencrawl logs, may tell you more.",
 			Count:  inconclusive,
 		})
 	}
