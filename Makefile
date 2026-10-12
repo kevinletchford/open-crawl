@@ -3,9 +3,13 @@
 # The product packages are pure Go, so they build and test without cgo.
 PRODUCT_PKGS := ./cmd/opencrawl ./internal/...
 
+# Stamped into `opencrawl version`; releases set it through GoReleaser.
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+LDFLAGS := -s -w -X main.version=$(VERSION)
+
 # Build the audit CLI
 opencrawl:
-	CGO_ENABLED=0 go build -o bin/opencrawl ./cmd/opencrawl
+	CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o bin/opencrawl ./cmd/opencrawl
 
 # Run the product tests
 test:
@@ -25,7 +29,7 @@ run-server:
 build-all:
 	rm -rf bin/
 	mkdir -p bin/
-	CGO_ENABLED=0 go build -o bin/opencrawl ./cmd/opencrawl
+	CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o bin/opencrawl ./cmd/opencrawl
 	go build -o bin/crawler-go ./cmd/bench/crawler-go/main.go
 	go build -o bin/tui ./cmd/bench/tui
 	cd cmd/bench/crawler-rust && cargo build --release

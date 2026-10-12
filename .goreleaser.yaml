@@ -1,0 +1,45 @@
+# Release builds of the opencrawl CLI. Push a tag (git tag v0.1.0 && git push
+# origin v0.1.0) and .github/workflows/release.yml publishes a GitHub release
+# with these archives and checksums.
+version: 2
+
+project_name: opencrawl
+
+before:
+  hooks:
+    - go mod tidy -diff
+
+builds:
+  - id: opencrawl
+    main: ./cmd/opencrawl
+    binary: opencrawl
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+    goos: [darwin, linux, windows]
+    goarch: [amd64, arm64]
+
+archives:
+  - id: opencrawl
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - README.md
+      - LICENSE*
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  use: github
+  filters:
+    exclude:
+      - "^chore"
+      - "^ci"
+      - "^test"

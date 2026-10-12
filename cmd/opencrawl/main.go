@@ -46,8 +46,12 @@ Usage:
   opencrawl history [host]         list saved audits
   opencrawl show <id>              re-print a saved audit, or write its report files
   opencrawl compare <id> [id]      what changed between two audits (default: the one before)
-  opencrawl mcp                    serve saved audits to AI tools over MCP (stdio)
+  opencrawl mcp                    serve audits to AI tools over MCP (stdio)
+  opencrawl mcp install            register the MCP server with Claude Code, Claude Desktop and Cursor
   opencrawl logs [flags] <file>…   what real AI agents requested and were served, from access logs
+
+  opencrawl doctor                 check the database, Chrome and MCP client setup
+  opencrawl version
 
 Audits are saved to $OPENCRAWL_DB or ~/.opencrawl/opencrawl.db.
 
@@ -80,6 +84,10 @@ func main() {
 		err = runMCP(ctx, args)
 	case "logs":
 		err = runLogs(ctx, args)
+	case "doctor":
+		err = runDoctor(ctx, args)
+	case "version", "-version", "--version":
+		err = runVersion()
 	case "-h", "--help", "help":
 		fmt.Print(usage)
 	default:
@@ -381,6 +389,9 @@ func runLogs(ctx context.Context, args []string) error {
 }
 
 func runMCP(ctx context.Context, args []string) error {
+	if len(args) > 0 && args[0] == "install" {
+		return runMCPInstall(ctx, args[1:])
+	}
 	fs := flag.NewFlagSet("mcp", flag.ContinueOnError)
 	dbPath := dbFlag(fs)
 	chrome := fs.String("chrome", "", "path to Chrome or Chromium, for audits with render (default: search the usual places)")
@@ -393,7 +404,7 @@ func runMCP(ctx context.Context, args []string) error {
 	}
 	defer st.Close()
 	// stdout carries the protocol, so nothing else may print there.
-	return mcpserver.New(st, mcpserver.Options{ChromePath: *chrome}).Run(ctx, &mcp.StdioTransport{})
+	return mcpserver.New(st, mcpserver.Options{ChromePath: *chrome, Version: buildVersion()}).Run(ctx, &mcp.StdioTransport{})
 }
 
 func runCompare(ctx context.Context, args []string) error {
