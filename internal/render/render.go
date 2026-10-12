@@ -9,6 +9,8 @@ package render
 import (
 	"context"
 	"fmt"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/chromedp/cdproto/emulation"
@@ -36,6 +38,9 @@ type Options struct {
 	// ExecPath is Chrome's path. Empty means chromedp's search of the usual
 	// install locations.
 	ExecPath string
+	// StartTimeout bounds Chrome's launch. Default 60s, as a cold start on a
+	// busy machine can take far longer than usual.
+	StartTimeout time.Duration
 }
 
 // Pool renders pages in one headless Chrome process.
@@ -57,10 +62,17 @@ func New(ctx context.Context, o Options) (*Pool, error) {
 	if o.Settle <= 0 {
 		o.Settle = 5 * time.Second
 	}
+	if o.StartTimeout <= 0 {
+		o.StartTimeout = 60 * time.Second
+	}
+	// Keep the end of Chrome's output, so a failed launch can say why.
+	out := &tail{max: 4096}
 	flags := append(chromedp.DefaultExecAllocatorOptions[:],
 		chromedp.DisableGPU,
 		chromedp.Flag("disable-dev-shm-usage", true),
 		chromedp.WindowSize(1366, 900),
+		chromedp.WSURLReadTimeout(o.StartTimeout),
+		chromedp.CombinedOutput(out),
 	)
 	if o.ExecPath != "" {
 		flags = append(flags, chromedp.ExecPath(o.ExecPath))
@@ -73,6 +85,9 @@ func New(ctx context.Context, o Options) (*Pool, error) {
 	defer warmCancel()
 	if err := chromedp.Run(warm); err != nil {
 		cancel()
+		if msg := out.String(); msg != "" {
+			return nil, fmt.Errorf("render: starting Chrome: %w\nChrome said:\n%s", err, msg)
+		}
 		return nil, fmt.Errorf("render: starting Chrome: %w", err)
 	}
 	return &Pool{allocCtx: allocCtx, cancel: cancel, tabs: make(chan struct{}, o.Tabs), opts: o}, nil
@@ -148,4 +163,27 @@ func waitForStableText(max time.Duration) chromedp.Action {
 		}
 		return nil
 	})
+}
+
+// tail keeps the last max bytes written to it.
+type tail struct {
+	mu  sync.Mutex
+	max int
+	buf []byte
+}
+
+func (t *tail) Write(p []byte) (int, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.buf = append(t.buf, p...)
+	if over := len(t.buf) - t.max; over > 0 {
+		t.buf = append(t.buf[:0], t.buf[over:]...)
+	}
+	return len(p), nil
+}
+
+func (t *tail) String() string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return strings.TrimSpace(string(t.buf))
 }

@@ -18,8 +18,8 @@ const (
 	// meta robots, headers, the raw HTML a non-JS crawler receives.
 	Exact Fidelity = "exact"
 	// Simulated findings come from requests sent with an agent's user agent
-	// from our network. The real agent, verified by IP or signature, may be
-	// treated differently.
+	// from the network of the machine running the audit. The real agent,
+	// verified by IP or signature, may be treated differently.
 	Simulated Fidelity = "simulated"
 	// Heuristic findings are inferences, such as "this page probably needs
 	// JavaScript", and can be wrong.

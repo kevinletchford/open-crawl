@@ -184,7 +184,7 @@ footer { margin-top: 48px; font-size: 13px; color: var(--muted); border-top: 1px
 
   {{if .Probes}}
   <h2>User-agent probes <span class="badge fid">simulated</span></h2>
-  <p>Each page was fetched with an ordinary browser user agent, then with each agent's user agent, from OpenCrawl's network. Firewalls that verify bots by IP or signature may treat the real agents differently. Your CDN or server logs are the ground truth.</p>
+  <p>Each page was fetched with an ordinary browser user agent, then with each agent's user agent, from the network of the machine that ran this audit. The real agents crawl from their operators' data centres, and firewalls that verify bots by IP or signature may treat them differently. Your CDN or server logs are the ground truth.</p>
   {{range .Probes}}
   <details class="finding">
     <summary><h3 class="mono">{{.URL}}</h3>{{if .Inconclusive}}<span class="badge sev-info">inconclusive</span>{{end}}</summary>

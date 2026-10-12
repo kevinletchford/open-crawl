@@ -107,7 +107,7 @@ func Text(w io.Writer, r *audit.Report) {
 		fmt.Fprintf(tw, "  %s\t%s\t%s\t%d\t%d\t%d\t%s\n", s.Agent, s.Kind, s.Root, s.Allowed, s.Restricted, s.Blocked, probe)
 	}
 	tw.Flush()
-	fmt.Fprintln(w, "\nexact = from public signals · simulated = our requests with the agent's user agent, not the real agent · heuristic = an inference")
+	fmt.Fprintln(w, "\nexact = from public signals · simulated = requests from this machine with the agent's user agent, not the real agent · heuristic = an inference")
 }
 
 // TextComparison prints what changed between two saved audits.

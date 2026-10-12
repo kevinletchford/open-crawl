@@ -19,7 +19,7 @@ Every finding is labelled with how far it can be trusted:
 | Fidelity | Comes from | Examples |
 | --- | --- | --- |
 | **exact** | Public, deterministic signals | robots.txt rules per agent (RFC 9309), meta robots, `X-Robots-Tag`, what's in the raw HTML |
-| **simulated** | Requests sent with an agent's user agent from our network | "your firewall returns 403 to ClaudeBot's user agent" |
+| **simulated** | Requests sent with an agent's user agent from your machine's network | "your firewall returns 403 to ClaudeBot's user agent" |
 | **heuristic** | An inference | "this page probably needs JavaScript" |
 
 Simulated findings are not the real agent's experience. Firewalls and CDNs
@@ -63,10 +63,21 @@ ClaudeBot read?" from real crawl data. To add it to Claude Code:
 $ claude mcp add opencrawl -- /path/to/bin/opencrawl mcp
 ```
 
-Tools: `list_audits`, `audit_summary`, `query_access` (agent, state, path
-glob), `get_finding`, `compare_audits`, `list_agents`, and `run_audit`, which
-crawls politely and is capped at 100 pages. The server tells the client
-model to pass on each finding's fidelity.
+Tools:
+
+- `run_audit` crawls from your machine (politely, capped at 100 pages) and
+  saves the result. With `render: true` it also renders pages in headless
+  Chrome (pass `-chrome /path` to `opencrawl mcp` if Chrome isn't found).
+  A crawl runs as a background job: `run_audit` waits up to 45 seconds, and if
+  the crawl is still going it returns a `job_id` for `audit_status`.
+  `cancel_audit` stops one.
+- `list_audits`, `audit_summary`, `query_access` (agent, state, path glob),
+  `get_finding`, `compare_audits` and `list_agents` read saved audits.
+- `analyze_logs` reads access logs on your machine, the same as
+  `opencrawl logs`.
+
+The server tells the client model to pass on each finding's fidelity and not
+to claim anything about training, ranking or citations.
 
 ## What the real agents did: access logs
 

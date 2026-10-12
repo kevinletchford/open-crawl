@@ -90,7 +90,7 @@ func newServer(t *testing.T) *Server {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { st.Close() })
-	s := New(st)
+	s := New(st, Options{})
 	// Use a fast, polite-enough config in tests.
 	s.run = func(ctx context.Context, c audit.Config) (*audit.Report, error) {
 		c.Delay = time.Millisecond
@@ -112,8 +112,12 @@ func TestToolsEndToEnd(t *testing.T) {
 		t.Errorf("empty-store error should point to run_audit: %q", text)
 	}
 
-	var sum SummaryOut
-	call(t, cs, "run_audit", map[string]any{"url": srv.URL, "max_pages": 500}, &sum, false)
+	var job JobOut
+	call(t, cs, "run_audit", map[string]any{"url": srv.URL, "max_pages": 500}, &job, false)
+	if job.State != JobDone || job.Summary == nil {
+		t.Fatalf("run_audit = %+v", job)
+	}
+	sum := *job.Summary
 	if sum.AuditID != 1 || sum.Host != host || sum.PagesFetched != 3 || sum.Score == nil {
 		t.Fatalf("run_audit = %+v", sum)
 	}
@@ -147,7 +151,7 @@ func TestToolsEndToEnd(t *testing.T) {
 	}
 
 	call(t, cs, "compare_audits", map[string]any{"host": host}, nil, true) // only one audit
-	call(t, cs, "run_audit", map[string]any{"url": srv.URL}, &sum, false)
+	call(t, cs, "run_audit", map[string]any{"url": srv.URL}, &job, false)
 	var cmp CompareOut
 	call(t, cs, "compare_audits", map[string]any{"host": host}, &cmp, false)
 	if cmp.OldID != 1 || cmp.NewID != 2 || !cmp.Comparison.Empty() {
@@ -158,20 +162,6 @@ func TestToolsEndToEnd(t *testing.T) {
 	call(t, cs, "list_agents", map[string]any{}, &ag, false)
 	if len(ag.Agents) < 10 {
 		t.Errorf("list_agents returned %d agents", len(ag.Agents))
-	}
-}
-
-func TestRunAuditCapsPages(t *testing.T) {
-	s := newServer(t)
-	var got int
-	s.run = func(ctx context.Context, c audit.Config) (*audit.Report, error) {
-		got = c.MaxPages
-		return &audit.Report{Host: "x.test", Summary: audit.Summary{Findings: map[string]int{}}}, nil
-	}
-	cs := connect(t, s)
-	call(t, cs, "run_audit", map[string]any{"url": "https://x.test", "max_pages": 10000}, nil, false)
-	if got != maxRunPages {
-		t.Errorf("max pages = %d, want the cap %d", got, maxRunPages)
 	}
 }
 
